@@ -1,2 +1,3 @@
 arcface_w600k_mbf.onnx
 faces.db
+.env

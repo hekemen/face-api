@@ -57,10 +57,11 @@ docker-run: docker-build
 	@echo "Ensuring faces.db exists..."
 	@touch faces.db
 	@echo "Starting Docker container..."
-	docker run -it --rm \
+	docker run --rm \
 		--name $(DOCKER_IMAGE) \
 		-p $(PORT):$(PORT) \
 		-v $(shell pwd)/faces.db:/app/faces.db \
+		--env-file .env \
 		$(DOCKER_IMAGE)
 
 docker-stop:
