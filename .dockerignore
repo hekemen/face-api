@@ -2,3 +2,7 @@
 *.tmp
 *.jpg
 *.png
+*.test
+faces.db
+.env
+lib/
