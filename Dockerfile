@@ -1,12 +1,23 @@
 # --- Stage 1: Build ---
-FROM golang:1.26.5-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 
-# Install C++ compiler, pkg-config, and OpenCV headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    pkg-config \
-    libopencv-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
+    libopencv-dev pkg-config curl && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG TARGETARCH
+
+# Fetch the ONNX Runtime shared library for the target architecture.
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-aarch64-1.23.0.tgz; \
+    else \
+      ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-1.23.0.tgz; \
+    fi && \
+    curl -sL -o /tmp/onnxruntime.tgz "$ORT_URL" && \
+    tar -xzf /tmp/onnxruntime.tgz -C /tmp && \
+    cp /tmp/onnxruntime-linux-*/lib/libonnxruntime.so /usr/local/lib/ && \
+    rm -rf /tmp/onnxruntime-linux-* /tmp/onnxruntime.tgz
 
 WORKDIR /app
 
@@ -17,23 +28,28 @@ RUN go mod download
 # Copy source code and build Cgo binary
 COPY . .
 ENV CGO_ENABLED=1
-RUN go build -ldflags="-s -w" -o face-api main.go
+RUN go build -ldflags="-s -w" -o face-api ./cmd/face-api
 
 # --- Stage 2: Runtime ---
 FROM debian:bookworm-slim
 
-# Install OpenCV runtime shared libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libopencv-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libgtk-3-0 libavcodec59 libavformat59 libswscale6 \
+    libopencv-highgui4.6 libopencv-imgproc4.6 libopencv-core4.6 \
+    libopencv-videoio4.6 libopencv-imgcodecs4.6 libopencv-video4.6 \
+    libopencv-objdetect4.6 libopencv-photo4.6 \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy compiled binary and model weights
+# Copy compiled binary, libonnxruntime, and model weights
+COPY --from=builder /usr/local/lib/libonnxruntime.so /usr/local/lib/
 COPY --from=builder /app/face-api .
-COPY arcface_w600k_mbf.onnx .
+COPY models/ /app/models/
 
-EXPOSE 8080
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+EXPOSE 8081
 
 CMD ["./face-api"]

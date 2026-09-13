@@ -1,66 +1,34 @@
-package main
+package server
 
 import (
 	"encoding/json"
 	"fmt"
-	"image"
 	"io"
-	"log"
-	"math"
 	"net/http"
-	"os"
-	"runtime"
-	"sync"
 	"time"
 
+	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 	"gocv.io/x/gocv"
 )
 
 var bucketName = []byte("Faces")
 
-type FaceServer struct {
-	mu        sync.RWMutex
-	dbMap     map[string][]float32 // In-memory cache for high-speed lookups
-	boltDB    *bolt.DB             // Persistent bbolt datastore
-	recNet    gocv.Net             // ArcFace ONNX execution graph
-	threshold float32              // Match confidence threshold (MobileFaceNet ~0.45)
-}
-
-type RecognitionResult struct {
-	Name       string  `json:"name"`
-	Similarity float32 `json:"similarity"`
-	Matched    bool    `json:"matched"`
-}
-
-type StreamCheckResponse struct {
-	Status     string  `json:"status"` // "ok" or "not ok"
-	Name       string  `json:"name,omitempty"`
-	Similarity float32 `json:"similarity,omitempty"`
-	Reason     string  `json:"reason,omitempty"`
-}
-
-func main() {
-	runtime.GOMAXPROCS(1)
-	// 1. Initialize bbolt Persistent Database
-	kvDB, err := bolt.Open("faces.db", 0600, &bolt.Options{Timeout: 1 * time.Second})
-	if err != nil {
-		log.Fatalf("Failed to open bbolt database: %v", err)
-	}
-	defer kvDB.Close()
-
-	// Ensure target bucket exists
-	err = kvDB.Update(func(tx *bolt.Tx) error {
+// EnsureBucket creates the faces bucket if it does not already exist.
+func EnsureBucket(db *bolt.DB) error {
+	return db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(bucketName)
 		return err
 	})
-	if err != nil {
-		log.Fatalf("Failed to create bbolt bucket: %v", err)
-	}
+}
 
-	// 2. Hydrate In-Memory Cache from Disk
+// NewFaceServer creates a FaceServer with the given bbolt database and ONNX
+// Runtime sessions. The caller is responsible for closing the runtime, env,
+// and sessions.
+func NewFaceServer(db *bolt.DB, rt *ort.Runtime, env *ort.Env, detSess, recSess *ort.Session, threshold float32) (*FaceServer, error) {
 	memoryCache := make(map[string][]float32)
-	err = kvDB.View(func(tx *bolt.Tx) error {
+
+	err := db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
 		return b.ForEach(func(k, v []byte) error {
 			var vec []float32
@@ -71,65 +39,51 @@ func main() {
 		})
 	})
 	if err != nil {
-		log.Fatalf("Failed to hydrate memory cache from bbolt: %v", err)
+		return nil, fmt.Errorf("hydrate cache: %w", err)
 	}
-	log.Printf("Loaded %d enrolled identity(ies) from bbolt datastore.", len(memoryCache))
 
-	// 3. Load ArcFace ONNX Model
-	net := gocv.ReadNetFromONNX("arcface_w600k_mbf.onnx")
-	if net.Empty() {
-		log.Fatal("Error loading ArcFace ONNX model (arcface_w600k_mbf.onnx)")
-	}
-	defer net.Close()
-
-	net.SetPreferableBackend(gocv.NetBackendDefault)
-	net.SetPreferableTarget(gocv.NetTargetCPU)
-
-	server := &FaceServer{
+	return &FaceServer{
 		dbMap:     memoryCache,
-		boltDB:    kvDB,
-		recNet:    net,
-		threshold: 0.45,
-	}
-
-	// 4. Register REST Endpoints
-	http.HandleFunc("/enroll", server.handleEnroll)
-	http.HandleFunc("/recognize", server.handleRecognize)
-	http.HandleFunc("/stream-check", server.handleStreamCheck)
-	http.HandleFunc("/users", server.handleListUsers)
-
-	log.Println("Face API Server running on http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+		boltDB:    db,
+		ortRT:     rt,
+		ortEnv:    env,
+		detSess:   detSess,
+		recSess:   recSess,
+		threshold: threshold,
+	}, nil
 }
 
-// Extract 512-dimensional embedding using ArcFace
-func (s *FaceServer) extractEmbedding(mat gocv.Mat) ([]float32, error) {
-	// ArcFace expects 112x112 RGB input with (x - 127.5) / 127.5 normalization
-	blob := gocv.BlobFromImage(mat, 1.0/127.5, image.Pt(112, 112),
-		gocv.NewScalar(127.5, 127.5, 127.5, 0), true, false)
-	defer blob.Close()
+// RegisterHandlers attaches all FaceServer HTTP handlers to the given mux.
+func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("/enroll", s.handleEnroll)
+	mux.HandleFunc("/recognize", s.handleRecognize)
+	mux.HandleFunc("/stream-check", s.handleStreamCheck)
+	mux.HandleFunc("/users", s.handleListUsers)
+}
 
-	s.mu.Lock()
-	s.recNet.SetInput(blob, "")
-	prob := s.recNet.Forward("")
-	s.mu.Unlock()
-	defer prob.Close()
-
-	if prob.Empty() || prob.Total() == 0 {
-		return nil, fmt.Errorf("failed to generate embedding")
-	}
-
-	data, err := prob.DataPtrFloat32()
+// decodeImageFromRequest reads a multipart form field as a file, reads all
+// bytes, and decodes them into a gocv.Mat.
+func decodeImageFromRequest(r *http.Request, fieldName string) (gocv.Mat, error) {
+	file, _, err := r.FormFile(fieldName)
 	if err != nil {
-		return nil, err
+		return gocv.Mat{}, fmt.Errorf("invalid image field: %v", err)
+	}
+	defer file.Close()
+
+	buf, err := io.ReadAll(file)
+	if err != nil {
+		return gocv.Mat{}, fmt.Errorf("failed to read image file: %v", err)
 	}
 
-	embedding := make([]float32, len(data))
-	copy(embedding, data)
-	return embedding, nil
+	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
+	if err != nil || mat.Empty() {
+		return gocv.Mat{}, fmt.Errorf("unable to decode image format")
+	}
+	return mat, nil
 }
 
-// POST /enroll (Form: "name", "image")
+// --- HTTP Handlers ---
+
 func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -154,7 +108,15 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	defer mat.Close()
 
-	embedding, err := s.extractEmbedding(mat)
+	cropped, _, err := s.detectAndCrop112(mat)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Face detection failed: " + err.Error()})
+		return
+	}
+	defer cropped.Close()
+
+	embedding, err := s.extractEmbedding(cropped)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Face processing failed"})
@@ -168,7 +130,6 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist to bbolt
 	err = s.boltDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
 		return b.Put([]byte(name), vecBytes)
@@ -179,7 +140,6 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update memory cache
 	s.mu.Lock()
 	s.dbMap[name] = embedding
 	s.mu.Unlock()
@@ -188,10 +148,8 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "enrolled", "name": name})
 }
 
-// POST /recognize (Form: "image")
 func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	log.Printf("request: %v", *r)
 
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -207,7 +165,15 @@ func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 	}
 	defer mat.Close()
 
-	queryVec, err := s.extractEmbedding(mat)
+	cropped, _, err := s.detectAndCrop112(mat)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Face detection failed: " + err.Error()})
+		return
+	}
+	defer cropped.Close()
+
+	queryVec, err := s.extractEmbedding(cropped)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Face processing failed"})
@@ -241,7 +207,6 @@ func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// POST /stream-check
 func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -251,7 +216,13 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rtspURL := os.Getenv("RTSP_URL")
+	rtspURL := r.FormValue("rtsp_url")
+	if rtspURL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(StreamCheckResponse{Status: "not ok", Reason: "Missing 'rtsp_url' field"})
+		return
+	}
+
 	capture, err := gocv.OpenVideoCapture(rtspURL)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
@@ -288,10 +259,17 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			queryVec, err := s.extractEmbedding(img)
+			cropped, _, err := s.detectAndCrop112(img)
 			img.Close()
 			if err != nil {
-				continue // Retry on next frame tick
+				cropped.Close()
+				continue
+			}
+
+			queryVec, err := s.extractEmbedding(cropped)
+			cropped.Close()
+			if err != nil {
+				continue
 			}
 
 			s.mu.RLock()
@@ -316,7 +294,6 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GET /users
 func (s *FaceServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -329,38 +306,4 @@ func (s *FaceServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string][]string{"users": users})
-}
-
-// Helper: Read multipart HTTP image into gocv.Mat
-func decodeImageFromRequest(r *http.Request, fieldName string) (gocv.Mat, error) {
-	file, _, err := r.FormFile(fieldName)
-	if err != nil {
-		return gocv.Mat{}, fmt.Errorf("invalid image field: %v", err)
-	}
-	defer file.Close()
-
-	buf, err := io.ReadAll(file)
-	if err != nil {
-		return gocv.Mat{}, fmt.Errorf("failed to read image file: %v", err)
-	}
-
-	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
-	if err != nil || mat.Empty() {
-		return gocv.Mat{}, fmt.Errorf("unable to decode image format")
-	}
-	return mat, nil
-}
-
-// Helper: Cosine Similarity between vector slices
-func cosineSimilarity(a, b []float32) float32 {
-	var dot, normA, normB float32
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (float32(math.Sqrt(float64(normA))) * float32(math.Sqrt(float64(normB))))
 }

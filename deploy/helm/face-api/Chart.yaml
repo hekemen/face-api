@@ -1,0 +1,6 @@
+apiVersion: v2
+name: face-api
+description: Face recognition API server (SCRFD detection + ArcFace recognition via ONNX Runtime)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

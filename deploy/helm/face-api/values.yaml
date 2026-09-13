@@ -1,0 +1,66 @@
+# Default values for face-api.
+# This is a YAML-formatted file. Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/hekemen/face-api
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 8081
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# A single replica writes faces.db; the PersistentVolume is ReadWriteOnce.
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+
+# Extra environment variables passed to the container, e.g.
+# extraEnv:
+#   - name: RTSP_URL
+#     value: "rtsp://..."
+extraEnv: []
+
+resources: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
