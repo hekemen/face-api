@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,6 +212,7 @@ func TestEnrollAndRecognize_E2E(t *testing.T) {
 		Matched    bool    `json:"matched"`
 		Name       string  `json:"name"`
 		Similarity float64 `json:"similarity"`
+		DurationMs int64   `json:"duration_ms"`
 	}
 	if err := json.NewDecoder(resp2.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode recognition response: %v", err)
@@ -227,8 +229,76 @@ func TestEnrollAndRecognize_E2E(t *testing.T) {
 	if result.Similarity < 0.45 {
 		t.Errorf("expected similarity >= 0.45, got %.4f", result.Similarity)
 	}
+	if result.DurationMs <= 0 {
+		t.Errorf("expected duration_ms > 0, got %d", result.DurationMs)
+	}
 
 	t.Log("=== PASS: Same person correctly recognized ===")
+}
+
+func TestEnrollMultiplePictures_E2E(t *testing.T) {
+	t.Log("=== Step 1: Enrolling 'multi' with image 1 ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_1.jpg"); code != http.StatusCreated {
+		t.Fatalf("first enroll: expected 201, got %d", code)
+	}
+
+	t.Log("=== Step 2: Appending image 2 to 'multi' ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_2.jpg"); code != http.StatusCreated {
+		t.Fatalf("second enroll: expected 201, got %d", code)
+	}
+
+	t.Log("=== Step 3: Appending image 1 again (3 pictures total) ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_1.jpg"); code != http.StatusCreated {
+		t.Fatalf("third enroll: expected 201, got %d", code)
+	}
+
+	t.Log("=== Step 4: Fourth enroll must be rejected (max 3) ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_2.jpg"); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for 4th picture, got %d", code)
+	}
+
+	t.Log("=== Step 5: Recognizing with image 2 (multi now has 3 embeddings) ===")
+	recognizeBuf, recognizeContentType := multipartBody("image", "test_hopkins_2.jpg")
+	recognizeReq, err := http.NewRequest(http.MethodPost, baseURL+"/recognize", recognizeBuf)
+	if err != nil {
+		t.Fatalf("failed to create recognize request: %v", err)
+	}
+	recognizeReq.Header.Set("Content-Type", recognizeContentType)
+	resp, err := http.DefaultClient.Do(recognizeReq)
+	if err != nil {
+		t.Fatalf("recognize request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Matched    bool  `json:"matched"`
+		DurationMs int64 `json:"duration_ms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode recognition response: %v", err)
+	}
+	if !result.Matched {
+		t.Errorf("expected match with multi-embedding user, got matched=false")
+	}
+	if result.DurationMs <= 0 {
+		t.Errorf("expected duration_ms > 0, got %d", result.DurationMs)
+	}
+	t.Log("=== PASS: multi-picture enroll + 3 max cap verified ===")
+}
+
+func enrollTo(bURL, name, imagePath string) int {
+	buf, contentType := multipartBodyWithName(name, "image", imagePath)
+	req, err := http.NewRequest(http.MethodPost, bURL+"/enroll", buf)
+	if err != nil {
+		return -1
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }
 
 func TestEnrollMissingName_E2E(t *testing.T) {
@@ -250,6 +320,279 @@ func TestEnrollMissingName_E2E(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing name, got %d", resp.StatusCode)
+	}
+}
+
+func containerLogs(t *testing.T) string {
+	t.Helper()
+	rc, err := testContainer.Logs(testCtx)
+	if err != nil {
+		t.Fatalf("failed to get container logs: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("failed to read container logs: %v", err)
+	}
+	return string(data)
+}
+
+// TestNoFaceNotAudited_E2E verifies a no-face scan (recognition with no
+// detected face) does not produce an audit entry.
+func TestNoFaceNotAudited_E2E(t *testing.T) {
+	t.Log("=== Step 1: reading audit count ===")
+	countBefore := auditCount(t)
+
+	t.Log("=== Step 2: recognizing with a solid-color (no-face) image ===")
+	solidJPG := []byte{
+		0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+		0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
+		0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
+		0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d, 0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12,
+		0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d, 0x1a, 0x1c, 0x1c, 0x20,
+		0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28, 0x37, 0x29,
+		0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32,
+		0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01,
+		0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00,
+		0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f,
+		0x00, 0xfb, 0xd5, 0xdb, 0xc0, 0xff, 0xd9,
+	}
+
+	tmpFile := "test_solid_noaudit.jpg"
+	if err := os.WriteFile(tmpFile, solidJPG, 0644); err != nil {
+		t.Fatalf("failed to write solid jpg: %v", err)
+	}
+	defer os.Remove(tmpFile)
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, _ := w.CreateFormFile("image", "solid.jpg")
+	fw.Write(solidJPG)
+	w.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/recognize", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for no face detected, got %d", resp.StatusCode)
+	}
+
+	t.Log("=== Step 3: verifying audit count is unchanged ===")
+	countAfter := auditCount(t)
+	if countAfter != countBefore {
+		t.Errorf("no-face recognize must not create audit entries: count before=%d after=%d", countBefore, countAfter)
+	}
+	t.Log("=== PASS: no-face scan produces no audit entry ===")
+}
+
+func auditCount(t *testing.T) int {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/audit")
+	if err != nil {
+		t.Fatalf("audit request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("failed to decode /audit response: %v", err)
+	}
+	return out.Count
+}
+
+// TestProbeEndpointsNotLogged_E2E verifies /healthz and /readyz requests are
+// skipped by the request-logging middleware (probes would otherwise pollute
+// the log stream), while a regular endpoint is still logged.
+func TestProbeEndpointsNotLogged_E2E(t *testing.T) {
+	t.Log("=== Triggering probe + regular requests ===")
+
+	get := func(path string) {
+		t.Helper()
+		resp, err := http.Get(baseURL + path)
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", path, err)
+		}
+		resp.Body.Close()
+	}
+	get("/healthz")
+	get("/readyz")
+	get("/users")
+
+	logs := containerLogs(t)
+
+	var probeRequests int
+	var usersLogged bool
+	for _, line := range strings.Split(logs, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["message"] != "request" {
+			continue
+		}
+		switch entry["path"] {
+		case "/healthz", "/readyz":
+			probeRequests++
+		case "/users":
+			usersLogged = true
+		}
+	}
+	if probeRequests > 0 {
+		t.Errorf("expected no request-log lines for /healthz or /readyz, found %d:\n%s", probeRequests, logs)
+	}
+	if !usersLogged {
+		t.Errorf("expected a request-log line for GET /users:\n%s", logs)
+	}
+	t.Log("=== PASS: probes skipped, regular requests still logged ===")
+}
+
+// TestRequestLogging_E2E verifies every HTTP request is logged to the
+// container console as a JSON zerolog line carrying method, path, status,
+// and duration.
+func TestRequestLogging_E2E(t *testing.T) {
+	t.Log("=== Triggering requests and inspecting container logs ===")
+
+	resp, err := http.Get(baseURL + "/users")
+	if err != nil {
+		t.Fatalf("users request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	logs := containerLogs(t)
+	var found bool
+	for _, line := range strings.Split(logs, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["method"] == "GET" && entry["path"] == "/users" {
+			found = true
+			if entry["status"] != float64(http.StatusOK) {
+				t.Errorf("request log for GET /users: expected status 200, got %v", entry["status"])
+			}
+			if _, ok := entry["duration_ms"]; !ok {
+				t.Errorf("request log for GET /users: missing duration_ms field: %v", entry)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a JSON request log line for GET /users, got logs:\n%s", logs)
+	}
+	t.Log("=== PASS: requests logged as JSON with method/path/status/duration ===")
+}
+
+// TestAuditEndpoint_E2E verifies face scans (enroll + recognize) are persisted
+// to the audit log with a timestamp and returned newest-first by GET /audit.
+func TestAuditEndpoint_E2E(t *testing.T) {
+	t.Log("=== Step 1: Enrolling a unique user to produce an audit entry ===")
+	name := fmt.Sprintf("audit_%d", time.Now().UnixNano())
+	if code := enrollTo(baseURL, name, "test_hopkins_1.jpg"); code != http.StatusCreated {
+		t.Fatalf("enroll %s: expected 201, got %d", name, code)
+	}
+
+	t.Log("=== Step 2: Recognizing to produce a recognize audit entry ===")
+	recognizeBuf, recognizeContentType := multipartBody("image", "test_hopkins_2.jpg")
+	recognizeReq, _ := http.NewRequest(http.MethodPost, baseURL+"/recognize", recognizeBuf)
+	recognizeReq.Header.Set("Content-Type", recognizeContentType)
+	recResp, err := http.DefaultClient.Do(recognizeReq)
+	if err != nil {
+		t.Fatalf("recognize request failed: %v", err)
+	}
+	recResp.Body.Close()
+
+	t.Log("=== Step 3: Reading /audit ===")
+	auditResp, err := http.Get(baseURL + "/audit")
+	if err != nil {
+		t.Fatalf("audit request failed: %v", err)
+	}
+	defer auditResp.Body.Close()
+	if auditResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(auditResp.Body)
+		t.Fatalf("expected 200 from /audit, got %d: %s", auditResp.StatusCode, string(body))
+	}
+
+	var out struct {
+		Entries []struct {
+			Time       string  `json:"time"`
+			Endpoint   string  `json:"endpoint"`
+			Name       string  `json:"name"`
+			Similarity float32 `json:"similarity"`
+			Matched    bool    `json:"matched"`
+			DurationMs int64   `json:"duration_ms"`
+			FaceImage  string  `json:"face_image"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(auditResp.Body).Decode(&out); err != nil {
+		t.Fatalf("failed to decode /audit response: %v", err)
+	}
+	if len(out.Entries) == 0 {
+		t.Fatalf("expected non-empty audit entries, got %+v", out)
+	}
+
+	var enrollFound, recognizeFound bool
+	for i, e := range out.Entries {
+		if ts, err := time.Parse(time.RFC3339Nano, e.Time); err != nil || ts.IsZero() {
+			t.Errorf("entry[%d] (%s): invalid time %q: %v", i, e.Endpoint, e.Time, err)
+		}
+		switch e.Endpoint {
+		case "recognize":
+			recognizeFound = true
+		case "enroll":
+			enrollFound = enrollFound || e.Name == name
+		}
+	}
+	if !enrollFound {
+		t.Errorf("expected an enroll audit entry for %q in: %+v", name, out.Entries)
+	}
+	if !recognizeFound {
+		t.Errorf("expected a recognize audit entry in: %+v", out.Entries)
+	}
+
+	// Check that each entry with a matched face has a non-empty face_image
+	for _, entry := range out.Entries {
+		if entry.Matched && entry.FaceImage == "" {
+			t.Errorf("matched audit entry for %q has empty face_image", entry.Name)
+		}
+	}
+
+	parsedTimes := make([]time.Time, len(out.Entries))
+	for i, e := range out.Entries {
+		parsedTimes[i], _ = time.Parse(time.RFC3339Nano, e.Time)
+	}
+	if len(parsedTimes) > 1 {
+		for i := 1; i < len(parsedTimes); i++ {
+			if parsedTimes[i].After(parsedTimes[i-1]) {
+				t.Errorf("audit entries not newest-first: entry %d time %s after entry %d time %s",
+					i-1, parsedTimes[i-1], i, parsedTimes[i])
+				break
+			}
+		}
+	}
+	t.Log("=== PASS: face scans persisted to audit log with timestamps ===")
+}
+
+// TestNoGPUWarning_E2E guards against the benign ONNX Runtime GPU device
+// discovery warning being re-introduced into the container logs.
+func TestNoGPUWarning_E2E(t *testing.T) {
+	logs := containerLogs(t)
+	if strings.Contains(logs, "GPU device discovery failed") {
+		t.Errorf("ONNX GPU device discovery warning present in container logs:\n%s", logs)
 	}
 }
 
