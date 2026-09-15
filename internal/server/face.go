@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"math"
 	"sync"
 
+	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 	"gocv.io/x/gocv"
@@ -40,8 +42,10 @@ var detLevels = []detLevel{
 // bbolt store, and the two ONNX Runtime inference sessions.
 type FaceServer struct {
 	mu     sync.RWMutex
-	dbMap  map[string][]float32 // In-memory cache for high-speed lookups
-	boltDB *bolt.DB             // Persistent bbolt datastore
+	dbMap  map[string][][]float32 // In-memory cache: name -> face embeddings (up to 3)
+	boltDB *bolt.DB               // Persistent bbolt datastore
+
+	log zerolog.Logger // structured application logger
 
 	ortRT   *ort.Runtime // ONNX Runtime handle (shared)
 	ortEnv  *ort.Env     // ONNX Runtime environment
@@ -51,6 +55,7 @@ type FaceServer struct {
 	inferMu sync.Mutex // serializes ONNX Runtime inference
 
 	threshold float32 // Match confidence threshold (~0.45)
+	rtspURL   string  // Default RTSP stream URL, used when the request omits rtsp_url
 }
 
 // resizePadToSquare resizes a BGR image so its longest side fits size,
@@ -322,4 +327,26 @@ func cosineSimilarity(a, b []float32) float32 {
 		return 0
 	}
 	return dot / (float32(math.Sqrt(float64(normA))) * float32(math.Sqrt(float64(normB))))
+}
+
+// bestEmbeddingScore returns the highest cosine similarity between query and
+// any of the user's stored embeddings.
+func bestEmbeddingScore(query []float32, embeddings [][]float32) float32 {
+	var best float32 = -1.0
+	for _, vec := range embeddings {
+		if s := cosineSimilarity(query, vec); s > best {
+			best = s
+		}
+	}
+	return best
+}
+
+// encodeFaceToBase64 encodes a gocv.Mat (BGR) to a base64-encoded JPEG string.
+func encodeFaceToBase64(mat gocv.Mat) (string, error) {
+	buf, err := gocv.IMEncode(gocv.JPEGFileExt, mat)
+	if err != nil {
+		return "", fmt.Errorf("encode face image: %w", err)
+	}
+	defer buf.Close()
+	return base64.StdEncoding.EncodeToString(buf.GetBytes()), nil
 }
