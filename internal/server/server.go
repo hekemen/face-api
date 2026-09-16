@@ -413,7 +413,7 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(StreamCheckResponse{
 			Status: "not ok",
-			Reason: "Failed to connect to RTSP stream: " + err.Error(),
+			Reason: "Failed to connect to RTSP stream",
 		})
 		return
 	}

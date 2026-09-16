@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmjpeg"
 	"github.com/pion/rtp"
 )
 
@@ -83,18 +85,27 @@ func readRTSPFrame(url string, timeout time.Duration) (*rgbImage, error) {
 	frameCh := make(chan frameResult, 1)
 	received := make(chan struct{})
 
+	// MJPEG frames are fragmented across multiple RTP packets. Feed every
+	// packet to the decoder until it assembles one complete frame.
 	c.OnPacketRTP(mjpegMedia, mjpegFormat, func(pkt *rtp.Packet) {
 		select {
 		case <-received:
 			return
 		default:
-			close(received)
 		}
 		jpegData, err := decoder.Decode(pkt)
 		if err != nil {
+			if errors.Is(err, rtpmjpeg.ErrMorePacketsNeeded) {
+				return // intermediate fragment, keep accumulating
+			}
+			close(received)
 			frameCh <- frameResult{err: fmt.Errorf("decode MJPEG RTP: %w", err)}
 			return
 		}
+		if jpegData == nil {
+			return
+		}
+		close(received)
 		frameCh <- frameResult{data: jpegData}
 	})
 
