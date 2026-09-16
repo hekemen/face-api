@@ -1,0 +1,15 @@
+{{template "head" .}}
+<div class="container">
+<h1>Enrolled Users</h1>
+{{if .Users}}
+<table>
+<tr><th>Name</th></tr>
+{{range .Users}}
+<tr><td>{{.}}</td></tr>
+{{end}}
+</table>
+{{else}}
+<p>No users enrolled yet.</p>
+{{end}}
+</div>
+{{template "foot" .}}

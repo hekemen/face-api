@@ -1,0 +1,51 @@
+# Raspberry Pi (arm64) deployment values for face-api.
+
+image:
+  repository: ghcr.io/hekemen/face-api
+  # Always pull: the Pi cluster caches "latest" by digest (IfNotPresent would
+  # silently keep running a stale image after a new push).
+  pullPolicy: Always
+  tag: "latest"
+
+imagePullSecrets:
+  - name: ghcr-pull
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+tolerations:
+  - key: "node-role.kubernetes.io/edge"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+resources:
+  limits:
+    cpu: "1"
+    memory: "512Mi"
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+
+persistence:
+  enabled: true
+  size: 2Gi
+  storageClassName: ""
+
+service:
+  type: ClusterIP
+  port: 8081
+
+ingress:
+  enabled: true
+  stripPrefix: "/face"
+  hosts:
+    - host: pi.home.arpa
+      paths:
+        - path: /face
+          pathType: Prefix
+
+extraEnv:
+  - name: ENABLE_UI
+    value: "true"
+  - name: RTSP_URL
+    value: rtsp://<username>:<password>@192.168.178.23:554/h264Preview_01_main

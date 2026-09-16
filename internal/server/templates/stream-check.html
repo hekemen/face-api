@@ -1,0 +1,14 @@
+{{template "head" .}}
+<div class="container">
+<h1>Stream Check</h1>
+<form method="POST" action="/ui/stream-check" enctype="multipart/form-data">
+  <label for="rtsp_url">RTSP URL (optional):</label>
+  <input type="text" id="rtsp_url" name="rtsp_url" placeholder="Leave empty to use default">
+  <br>
+  <button type="submit">Check Stream</button>
+</form>
+{{if .Result}}
+<div class="result {{.Class}}">{{.Result}}</div>
+{{end}}
+</div>
+{{template "foot" .}}

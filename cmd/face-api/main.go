@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
@@ -18,6 +19,8 @@ const (
 )
 
 func main() {
+	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
 	// 1. Initialize bbolt Persistent Database
 	dbPath := os.Getenv("FACES_DB_PATH")
 	if dbPath == "" {
@@ -40,7 +43,12 @@ func main() {
 	}
 	defer rt.Close()
 
-	ortEnv, err := rt.NewEnv("face-api", ort.LoggingLevelWarning)
+	// Log severity is set to Error (not Warning) to suppress ORT's benign
+	// GPU device discovery warning (device_discovery.cc), which tries to read
+	// /sys/class/drm/*/device/vendor at env creation even on CPU-only builds.
+	// The app only runs the two ONNX models on the CPU, so no hardware device
+	// discovery is needed.
+	ortEnv, err := rt.NewEnv("face-api", ort.LoggingLevelError)
 	if err != nil {
 		log.Fatalf("Failed to create ONNX Runtime environment: %v", err)
 	}
@@ -70,8 +78,10 @@ func main() {
 	}
 	defer recSess.Close()
 
+	enableUI := os.Getenv("ENABLE_UI") == "true"
+
 	// 3. Create server and register handlers
-	srv, err := server.NewFaceServer(kvDB, rt, ortEnv, detSess, recSess, 0.45)
+	srv, err := server.NewFaceServer(kvDB, logger, rt, ortEnv, detSess, recSess, 0.45, os.Getenv("RTSP_URL"), enableUI)
 	if err != nil {
 		log.Fatalf("Failed to create face server: %v", err)
 	}
@@ -79,6 +89,6 @@ func main() {
 	mux := http.NewServeMux()
 	srv.RegisterHandlers(mux)
 
-	log.Println("Face API Server running on http://localhost:8081")
-	log.Fatal(http.ListenAndServe(":8081", mux))
+	logger.Info().Msg("Face API Server running on http://localhost:8081")
+	log.Fatal(http.ListenAndServe(":8081", srv.RequestLogging(mux)))
 }
