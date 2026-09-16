@@ -56,6 +56,7 @@ type FaceServer struct {
 
 	threshold float32 // Match confidence threshold (~0.45)
 	rtspURL   string  // Default RTSP stream URL, used when the request omits rtsp_url
+	enableUI  bool    // Whether to serve the /ui web interface
 }
 
 // resizePadToSquare resizes a BGR image so its longest side fits size,
@@ -78,7 +79,10 @@ func resizePadToSquare(mat gocv.Mat, size int) (gocv.Mat, float64, error) {
 	}
 
 	resized := gocv.NewMat()
-	gocv.Resize(mat, &resized, image.Pt(nw, nh), 0, 0, gocv.InterpolationLinear)
+	if err := gocv.Resize(mat, &resized, image.Pt(nw, nh), 0, 0, gocv.InterpolationLinear); err != nil {
+		resized.Close()
+		return gocv.Mat{}, 0, fmt.Errorf("resize padded square: %w", err)
+	}
 
 	if nw == size && nh == size {
 		return resized, scale, nil
@@ -292,7 +296,11 @@ func (s *FaceServer) detectAndCrop112(mat gocv.Mat) (gocv.Mat, [4]float32, error
 	roi := mat.Region(image.Rect(bestX1, bestY1, bestX2, bestY2))
 
 	cropped := gocv.NewMat()
-	gocv.Resize(roi, &cropped, image.Point{recInputSize, recInputSize}, 0, 0, gocv.InterpolationLinear)
+	if err := gocv.Resize(roi, &cropped, image.Point{recInputSize, recInputSize}, 0, 0, gocv.InterpolationLinear); err != nil {
+		cropped.Close()
+		roi.Close()
+		return gocv.Mat{}, [4]float32{}, fmt.Errorf("resize face crop: %w", err)
+	}
 	roi.Close()
 
 	normalizedBbox := [4]float32{

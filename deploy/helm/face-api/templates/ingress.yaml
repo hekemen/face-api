@@ -5,7 +5,11 @@ metadata:
   name: {{ include "face-api.fullname" . }}
   labels:
     {{- include "face-api.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- $annotations := .Values.ingress.annotations }}
+  {{- if .Values.ingress.stripPrefix }}
+  {{- $annotations = merge $annotations (dict "traefik.ingress.kubernetes.io/router.middlewares" (printf "%s-%s@kubernetescrd" .Release.Namespace (printf "%s-stripprefix" (include "face-api.fullname" .)))) }}
+  {{- end }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

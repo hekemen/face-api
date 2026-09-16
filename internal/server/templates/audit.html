@@ -1,0 +1,49 @@
+{{template "head" .}}
+<div class="container">
+<h1>Audit Log</h1>
+<p>Showing {{.Count}} entries (newest first) <span id="refreshHint" style="font-size:12px;color:var(--text-muted);">— auto-refreshes every 10s</span></p>
+{{if .Entries}}
+<table>
+<tr><th>Time</th><th>Endpoint</th><th>Name</th><th>Similarity</th><th>Matched</th><th>Face</th></tr>
+{{range .Entries}}
+<tr>
+  <td>{{.Time.Format "2006-01-02 15:04:05"}}</td>
+  <td>{{.Endpoint}}</td>
+  <td>{{.Name}}</td>
+  <td>{{printf "%.3f" .Similarity}}</td>
+  <td>{{if .Matched}}Yes{{else}}No{{end}}</td>
+  <td>{{if .FaceImage}}<img class="face-thumb" src="data:image/jpeg;base64,{{.FaceImage}}">{{else}}-{{end}}</td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p>No audit entries yet.</p>
+{{end}}
+</div>
+<script>
+(function() {
+  setInterval(function() {
+    fetch('/ui/audit')
+      .then(function(resp) { return resp.text(); })
+      .then(function(html) {
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(html, 'text/html');
+        var newTable = doc.querySelector('table');
+        var newHint = doc.querySelector('#refreshHint');
+        var newMsg = doc.querySelector('p');
+        var table = document.querySelector('table');
+        var hint = document.getElementById('refreshHint');
+        var msg = document.querySelector('.container > p');
+        if (newTable && table) {
+          table.innerHTML = newTable.innerHTML;
+        } else if (newHint && hint) {
+          hint.outerHTML = newHint.outerHTML;
+        } else if (newMsg && msg && !table) {
+          msg.innerHTML = newMsg.innerHTML;
+        }
+      })
+      .catch(function(err) { console.error('Audit refresh failed:', err); });
+  }, 10000);
+})();
+</script>
+{{template "foot" .}}

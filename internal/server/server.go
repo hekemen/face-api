@@ -102,7 +102,7 @@ func (s *FaceServer) readAudit(limit int) ([]AuditEntry, error) {
 // and ONNX Runtime sessions. The caller is responsible for closing the
 // runtime, env, and sessions. rtspURL is the default RTSP stream URL used by
 // stream-check when the request does not provide one.
-func NewFaceServer(db *bolt.DB, log zerolog.Logger, rt *ort.Runtime, env *ort.Env, detSess, recSess *ort.Session, threshold float32, rtspURL string) (*FaceServer, error) {
+func NewFaceServer(db *bolt.DB, log zerolog.Logger, rt *ort.Runtime, env *ort.Env, detSess, recSess *ort.Session, threshold float32, rtspURL string, enableUI bool) (*FaceServer, error) {
 	memoryCache := make(map[string][][]float32)
 
 	err := db.View(func(tx *bolt.Tx) error {
@@ -130,6 +130,7 @@ func NewFaceServer(db *bolt.DB, log zerolog.Logger, rt *ort.Runtime, env *ort.En
 		recSess:   recSess,
 		threshold: threshold,
 		rtspURL:   rtspURL,
+		enableUI:  enableUI,
 	}, nil
 }
 
@@ -142,6 +143,10 @@ func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/audit", s.handleListAudit)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
+
+	if s.enableUI {
+		s.RegisterUIHandlers(mux)
+	}
 }
 
 // statusRecorder captures the response status code written by a handler so

@@ -1,23 +1,17 @@
 # --- Stage 1: Build ---
-FROM golang:1.27-bookworm AS builder
+# BuildKit injects TARGETARCH automatically when building with buildx
+# (--platform), e.g. arm64 for the Raspberry Pi. Plain `docker build`
+# (testcontainers e2e) has no --platform and leaves TARGETARCH empty, so the
+# ${...:-amd64} default resolves it to the host arch. Do NOT give TARGETARCH a
+# plain =amd64 default: that shadows buildx's per-platform value and makes
+# cross-arch builds silently produce amd64 content.
+ARG TARGETARCH
+FROM --platform=linux/${TARGETARCH:-amd64} golang:1.27-trixie AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
     libopencv-dev pkg-config curl && \
     rm -rf /var/lib/apt/lists/*
-
-ARG TARGETARCH
-
-# Fetch the ONNX Runtime shared library for the target architecture.
-RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-aarch64-1.23.0.tgz; \
-    else \
-      ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-1.23.0.tgz; \
-    fi && \
-    curl -sL -o /tmp/onnxruntime.tgz "$ORT_URL" && \
-    tar -xzf /tmp/onnxruntime.tgz -C /tmp && \
-    cp /tmp/onnxruntime-linux-*/lib/libonnxruntime.so /usr/local/lib/ && \
-    rm -rf /tmp/onnxruntime-linux-* /tmp/onnxruntime.tgz
 
 WORKDIR /app
 
@@ -27,26 +21,42 @@ RUN go mod download
 
 # Copy source code and build Cgo binary
 COPY . .
-ENV CGO_ENABLED=1
+# Full-performance build. CGO_LDFLAGS=-lstdc++ guarantees the final cgo link
+# resolves gocv's C++ OpenCV symbols (libstdc++) even if Go picks gcc as the
+# external linker.
+ENV CGO_ENABLED=1 CGO_LDFLAGS="-lstdc++"
 RUN go build -ldflags="-s -w" -o face-api ./cmd/face-api
 
 # --- Stage 2: Runtime ---
-FROM debian:bookworm-slim
+FROM --platform=linux/${TARGETARCH:-amd64} debian:trixie-slim
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgtk-3-0 libavcodec59 libavformat59 libswscale6 \
-    libopencv-highgui4.6 libopencv-imgproc4.6 libopencv-core4.6 \
-    libopencv-videoio4.6 libopencv-imgcodecs4.6 libopencv-video4.6 \
-    libopencv-objdetect4.6 libopencv-photo4.6 \
-    ca-certificates && \
+    libgtk-3-0 libavcodec61 libavformat61 libswscale8 \
+    libopencv-core410 libopencv-imgproc410 libopencv-highgui410 \
+    libopencv-videoio410 libopencv-imgcodecs410 libopencv-video410 \
+    libopencv-objdetect410 libopencv-photo410 \
+    libstdc++6 ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy compiled binary, libonnxruntime, and model weights
-COPY --from=builder /usr/local/lib/libonnxruntime.so /usr/local/lib/
+# Copy compiled binary and model weights
 COPY --from=builder /app/face-api .
 COPY models/ /app/models/
+
+# Download ONNX Runtime library directly in runtime stage (avoids cross-arch COPY issues)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-aarch64-1.23.0.tgz; \
+    else \
+      ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-1.23.0.tgz; \
+    fi && \
+    curl -sL -o /tmp/onnxruntime.tgz "$ORT_URL" && \
+    tar -xzf /tmp/onnxruntime.tgz -C /tmp && \
+    cp /tmp/onnxruntime-linux-*/lib/libonnxruntime.so.1* /usr/local/lib/ && \
+    ln -sf libonnxruntime.so.1 /usr/local/lib/libonnxruntime.so && \
+    rm -rf /tmp/onnxruntime-linux-* /tmp/onnxruntime.tgz && \
+    ldconfig
 
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
