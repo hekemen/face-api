@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -411,9 +412,15 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 	img, err := readRTSPFrame(rtspURL, 3*time.Second)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
+		// Surface codec/unsupported-stream reasons explicitly (e.g. an H.264
+		// camera); keep the generic connect-failure reason otherwise.
+		reason := "Failed to connect to RTSP stream"
+		if strings.Contains(err.Error(), "unsupported codec") {
+			reason = err.Error()
+		}
 		json.NewEncoder(w).Encode(StreamCheckResponse{
 			Status: "not ok",
-			Reason: "Failed to connect to RTSP stream",
+			Reason: reason,
 		})
 		return
 	}
