@@ -127,7 +127,8 @@ func (m *mockRTSPTest) stopSrv() {
 
 func mockJPEGFrame(t *testing.T) []byte {
 	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	// 256x256 to force multiple RTP packets (> MTU); matches the e2e suite.
+	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
 	draw.Draw(img, img.Bounds(), image.NewUniform(color.RGBA{R: 200, G: 100, B: 50, A: 255}), image.Point{}, draw.Src)
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
@@ -148,11 +149,8 @@ func TestReadRTSPFrameMJPEG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRTSPFrame: %v", err)
 	}
-	if img == nil || img.w != 32 || img.h != 32 {
-		t.Fatalf("readRTSPFrame returned image %v, want 32x32", img)
-	}
-	if img.w != 32 {
-		t.Fatalf("frame width = %d, want 32", img.w)
+	if img == nil || img.w != 256 || img.h != 256 {
+		t.Fatalf("readRTSPFrame returned image %v, want 256x256", img)
 	}
 }
 
