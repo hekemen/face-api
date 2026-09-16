@@ -23,15 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # The ONNX weights are gitignored, so download them for the build context.
-      - name: Download ONNX models
-        run: |
-          mkdir -p models
-          for url in \
-            "https://huggingface.co/deepghs/insight-face/resolve/main/scrfd_500m.onnx" \
-            "https://huggingface.co/deepghs/insight-face/resolve/main/buffalo_s/w600k_mbf.onnx"; do
-            [ -f "models/$(basename $url)" ] || curl -L --fail -o "models/$(basename $url)" "$url"
-          done
+      # ONNX models are committed to the repo (models/), no download needed.
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
