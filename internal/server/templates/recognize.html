@@ -1,0 +1,37 @@
+{{template "head" .}}
+<div class="container">
+<h1>Recognize Face</h1>
+<form method="POST" action="/ui/recognize" enctype="multipart/form-data" id="recognizeForm">
+  <label for="image">Image:</label>
+  <input type="file" id="image" name="image" accept="image/*" required>
+  <br>
+  <button type="submit">Recognize</button>
+</form>
+<div id="preview" class="preview-container" style="display:none;">
+  <img id="previewImg" src="" alt="Preview">
+</div>
+{{if .Result}}
+<div class="result {{.Class}}">{{.Result}}</div>
+{{end}}
+</div>
+<script>
+(function() {
+  var fileInput = document.getElementById('image');
+  var preview = document.getElementById('preview');
+  var previewImg = document.getElementById('previewImg');
+  if (fileInput) {
+    fileInput.addEventListener('change', function(e) {
+      var file = e.target.files[0];
+      if (file) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+          previewImg.src = e.target.result;
+          preview.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+  }
+})();
+</script>
+{{template "foot" .}}

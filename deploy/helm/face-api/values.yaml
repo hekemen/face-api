@@ -6,7 +6,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/hekemen/face-api
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: "dev"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -36,6 +36,9 @@ ingress:
   enabled: false
   className: ""
   annotations: {}
+  # When set, a Traefik Middleware strips this prefix (e.g. "/face")
+  # from incoming requests before reaching the service.
+  stripPrefix: ""
   hosts:
     - host: chart-example.local
       paths:
@@ -55,11 +58,40 @@ persistence:
 # extraEnv:
 #   - name: RTSP_URL
 #     value: "rtsp://..."
-extraEnv: []
+extraEnv:
+  - name: ENABLE_UI
+    value: "true"
 
-resources: {}
+# Kubernetes liveness/readiness probes. Both hit lightweight HTTP endpoints
+# (/healthz returns 200 whenever the process is alive; /readyz returns 200 only
+# once the bbolt database is open and the cache is hydrated).
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
 
-nodeSelector: {}
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3
+
+resources:
+  # 1 CPU / 512Mi hard limits; ONNX inference is single-threaded.
+  limits:
+    cpu: "1"
+    memory: "512Mi"
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+
+nodeSelector:
+  kubernetes.io/arch: arm64
 
 tolerations: []
 

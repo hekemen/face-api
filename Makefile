@@ -1,7 +1,7 @@
 # Project Variables
 BINARY_NAME=face-api
 DOCKER_IMAGE=pi5-face-api
-DOCKER_REGISTRY=ghcr.io
+DOCKER_REGISTRY=ghcr.io/hekemen
 DOCKER_REPO=$(DOCKER_REGISTRY)/$(shell basename $(shell pwd))
 SCRFD_MODEL_FILE=models/scrfd_500m.onnx
 SCRFD_MODEL_URL=https://huggingface.co/deepghs/insight-face/resolve/main/scrfd_500m.onnx
@@ -27,13 +27,17 @@ LIBONNXRT=$(LIBONNXRT_DIR)/libonnxruntime.so
 REQUESTS ?= 500
 CONCURRENCY ?= 10
 
+# Retry config for the (flaky) QEMU-emulated arm64 build
+RETRY_COUNT ?= 5
+RETRY_DELAY ?= 10
+
 # Guards against empty variable overrides
 REQ_VAL = $(if $(strip $(REQUESTS)),$(REQUESTS),50)
 CONC_VAL = $(if $(strip $(CONCURRENCY)),$(CONCURRENCY),5)
 
 BOUNDARY = ------------------------heyboundary
 
-.PHONY: all build run docker-build docker-build-pi5 docker-run docker-stop docker-build-all docker-push-all download-model install-libonnxruntime download-libonnxruntime install-hey generate-test-image prepare-payload load-test load-test-users load-test-recognize test clean help
+.PHONY: all build run docker-build docker-build-pi5 docker-run docker-stop docker-build-all docker-push-all docker-push docker-push-latest docker-push-arm64 docker-push-arm64-retry docker-push-arm64-retry-all helm-deploy-pi helm-upgrade-pi download-model install-libonnxruntime download-libonnxruntime install-hey generate-test-image prepare-payload load-test load-test-users load-test-recognize test test-e2e test-rtsp clean help
 
 all: build
 
@@ -47,13 +51,22 @@ help:
 	@echo "  make docker-stop         - Stop and remove the Docker container"
 	@echo "  make docker-build-all    - Build multi-arch Docker images (amd64 + arm64)"
 	@echo "  make docker-push-all     - Push multi-arch Docker images to registry"
+	@echo "  make docker-push         - Build and push multi-arch image with dev tag"
+	@echo "  make docker-push-latest  - Build and push multi-arch image with latest + git sha tags"
+	@echo "  make docker-push-arm64    - Build and push linux/arm64 image (ghcr.io/hekemen/face-api:latest)"
+	@echo "  make docker-push-arm64-retry - Build+push arm64, retrying up to RETRY_COUNT times (default 5)"
+	@echo "  make docker-push-arm64-retry-all - Retry loop with --no-cache (delete-poison cache safety)"
 	@echo "  make download-model      - Fetch ONNX models if missing"
 	@echo "  make download-libonnxruntime - Fetch libonnxruntime.so for local runs"
 	@echo "  make load-test           - Run full load test suite with 'hey'"
 	@echo "  make load-test-users     - Load test GET /users endpoint"
 	@echo "  make load-test-recognize - Load test POST /recognize endpoint"
 	@echo "  make clean               - Remove compiled binary and temporary files"
-	@echo "  make test                - Run end-to-end tests with testcontainers"
+	@echo "  make test                - Run all end-to-end tests with testcontainers (e2e + rtsp)"
+	@echo "  make test-e2e            - Run face recognition end-to-end tests"
+	@echo "  make test-rtsp           - Run RTSP stream-check end-to-end tests"
+	@echo "  make helm-deploy-pi      - Deploy face-api to Raspberry Pi cluster (helm install)"
+	@echo "  make helm-upgrade-pi     - Upgrade face-api on Raspberry Pi cluster (helm upgrade)"
 
 download-libonnxruntime: install-libonnxruntime
 
@@ -137,6 +150,64 @@ docker-push-all: download-model
 		--push \
 		.
 
+docker-push: download-model
+	@echo "Building and pushing multi-arch Docker image: $(DOCKER_REPO):dev..."
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		-t $(DOCKER_REPO):dev \
+		--push \
+		.
+
+docker-push-latest: download-model
+	@echo "Building and pushing multi-arch Docker image with latest + sha tags..."
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		-t $(DOCKER_REPO):latest \
+		-t $(DOCKER_REPO):$(shell git rev-parse --short HEAD) \
+		--push \
+		.
+
+# Build and push the linux/arm64 image to GHCR as $(DOCKER_REPO):latest
+# (values.pi.yaml pins image.tag: latest). Layers shared with previous
+# attempts are cached, so a retry that reuses the go-build layer is cheap.
+docker-push-arm64: download-model
+	@echo "Building and pushing linux/arm64 image: $(DOCKER_REPO):latest..."
+	docker buildx build \
+		--platform linux/arm64 \
+		-t $(DOCKER_REPO):latest \
+		--push \
+		.
+
+# QEMU-emulated arm64 builds are flaky (intermittent cc1 SIGSEGV in the frozen
+# host emulator), so this retries the build+push until it succeeds.
+docker-push-arm64-retry: download-model
+	@for i in $$(seq 1 $(RETRY_COUNT)); do \
+		echo "=== arm64 build+push attempt $$i/$(RETRY_COUNT) ==="; \
+		if docker buildx build --platform linux/arm64 -t $(DOCKER_REPO):latest --push .; then \
+			echo "=== SUCCESS on attempt $$i ==="; \
+			exit 0; \
+		fi; \
+		echo "attempt $$i failed, retrying in $(RETRY_DELAY)s..."; \
+		sleep $(RETRY_DELAY); \
+	done; \
+	echo "FAILED: $(RETRY_COUNT) attempts exhausted (QEMU emulation unstable)"; \
+	exit 1
+
+# Same retry loop, but rebuild every layer from scratch each attempt
+# (--no-cache). Use only when a dangling/bad cache may poison the build.
+docker-push-arm64-retry-all: download-model
+	@for i in $$(seq 1 $(RETRY_COUNT)); do \
+		echo "=== full (--no-cache) arm64 build+push attempt $$i/$(RETRY_COUNT) ==="; \
+		if docker buildx build --no-cache --platform linux/arm64 -t $(DOCKER_REPO):latest --push .; then \
+			echo "=== SUCCESS on attempt $$i ==="; \
+			exit 0; \
+		fi; \
+		echo "attempt $$i failed, retrying in $(RETRY_DELAY)s..."; \
+		sleep $(RETRY_DELAY); \
+	done; \
+	echo "FAILED: $(RETRY_COUNT) attempts exhausted (QEMU emulation unstable)"; \
+	exit 1
+
 install-hey:
 	@which hey > /dev/null || (echo "Installing 'hey'..." && go install github.com/rakyll/hey@latest)
 
@@ -171,9 +242,37 @@ load-test-recognize: install-hey prepare-payload
 
 test:
 	@echo "Running end-to-end tests with testcontainers..."
+	go test -v -count=1 ./test/e2e/... ./test/rtsp/...
+
+test-e2e:
+	@echo "Running face recognition end-to-end tests..."
 	go test -v -count=1 ./test/e2e/...
+
+test-rtsp:
+	@echo "Running RTSP stream-check end-to-end tests..."
+	go test -v -count=1 ./test/rtsp/...
 
 clean:
 	@echo "Cleaning output binaries and temporary files..."
 	rm -f $(BINARY_NAME) $(TEST_IMAGE) payload.raw
 	rm -rf $(LIBONNXRT_DIR)
+
+# --- Helm Deployment Targets ---
+
+NAMESPACE ?= face-api
+RELEASE_NAME ?= face-api
+
+helm-deploy-pi:
+	@echo "Deploying face-api to Raspberry Pi cluster (namespace: $(NAMESPACE))..."
+	helm upgrade --install $(RELEASE_NAME) deploy/helm/face-api \
+		--create-namespace \
+		--namespace $(NAMESPACE) \
+		--values deploy/helm/face-api/values.yaml \
+		--values deploy/helm/face-api/values.pi.yaml
+
+helm-upgrade-pi:
+	@echo "Upgrading face-api on Raspberry Pi cluster (namespace: $(NAMESPACE))..."
+	helm upgrade $(RELEASE_NAME) deploy/helm/face-api \
+		--namespace $(NAMESPACE) \
+		--values deploy/helm/face-api/values.yaml \
+		--values deploy/helm/face-api/values.pi.yaml

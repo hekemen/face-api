@@ -6,6 +6,11 @@ metadata:
     {{- include "face-api.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # bbolt takes an exclusive file lock on the shared PVC, so rolling updates
+  # cannot run two pods against the same database file. Recreate terminates
+  # the old pod before starting the replacement.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "face-api.selectorLabels" . | nindent 6 }}
@@ -43,16 +48,18 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /users
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 10
+              path: {{ .Values.livenessProbe.httpGet.path }}
+              port: {{ .Values.livenessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /users
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 5
+              path: {{ .Values.readinessProbe.httpGet.path }}
+              port: {{ .Values.readinessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:

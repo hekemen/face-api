@@ -62,7 +62,7 @@ Set environment variables via `.env` file or `docker run --env-file`:
 
 | Variable | Description |
 |----------|-------------|
-| `RTSP_URL` | RTSP camera URL for stream-check endpoint |
+| `RTSP_URL` | Default RTSP camera URL for stream-check; used when the request omits `rtsp_url` |
 
 ## Load Testing
 
