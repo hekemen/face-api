@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"math"
@@ -11,7 +10,6 @@ import (
 	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
-	"gocv.io/x/gocv"
 )
 
 const (
@@ -59,77 +57,9 @@ type FaceServer struct {
 	enableUI  bool    // Whether to serve the /ui web interface
 }
 
-// resizePadToSquare resizes a BGR image so its longest side fits size,
-// preserving aspect ratio, and places it centered on a size x size black
-// canvas. It returns the canvas Mat and the applied scale factor so model
-// coordinates can be mapped back to the original image.
-func resizePadToSquare(mat gocv.Mat, size int) (gocv.Mat, float64, error) {
-	h, w := mat.Rows(), mat.Cols()
-
-	longest := h
-	if w > longest {
-		longest = w
-	}
-	scale := float64(size) / float64(longest)
-
-	nw := int(math.Round(float64(w) * scale))
-	nh := int(math.Round(float64(h) * scale))
-	if nw <= 0 || nh <= 0 {
-		return gocv.Mat{}, 0, fmt.Errorf("invalid scaled dimensions %dx%d", nw, nh)
-	}
-
-	resized := gocv.NewMat()
-	if err := gocv.Resize(mat, &resized, image.Pt(nw, nh), 0, 0, gocv.InterpolationLinear); err != nil {
-		resized.Close()
-		return gocv.Mat{}, 0, fmt.Errorf("resize padded square: %w", err)
-	}
-
-	if nw == size && nh == size {
-		return resized, scale, nil
-	}
-
-	canvas := gocv.Zeros(size, size, gocv.MatTypeCV8UC3)
-	roi := canvas.Region(image.Rect(0, 0, nw, nh))
-	resized.CopyTo(&roi)
-	roi.Close()
-	resized.Close()
-	return canvas, scale, nil
-}
-
-// matToNCHW converts a continuous size x size 3-channel BGR Mat into an NCHW
-// float32 blob with RGB channel order, normalized as (pixel - 127.5) / div.
-func matToNCHW(mat gocv.Mat, size int, div float32) ([]float32, error) {
-	if mat.Rows() != size || mat.Cols() != size || mat.Channels() != 3 {
-		return nil, fmt.Errorf("expected %dx%dx3 image, got %dx%dx%d",
-			size, size, mat.Rows(), mat.Cols(), mat.Channels())
-	}
-	if !mat.IsContinuous() {
-		return nil, fmt.Errorf("image mat is not continuous")
-	}
-
-	pix, err := mat.DataPtrUint8()
-	if err != nil {
-		return nil, fmt.Errorf("read mat data: %w", err)
-	}
-	if len(pix) != size*size*3 {
-		return nil, fmt.Errorf("unexpected mat byte length %d (want %d)", len(pix), size*size*3)
-	}
-
-	data := make([]float32, 3*size*size)
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			base := (y*size + x) * 3
-			b := float32(pix[base+0])
-			g := float32(pix[base+1])
-			r := float32(pix[base+2])
-			idx := y*size + x
-			data[0*size*size+idx] = (r - 127.5) / div
-			data[1*size*size+idx] = (g - 127.5) / div
-			data[2*size*size+idx] = (b - 127.5) / div
-		}
-	}
-	return data, nil
-}
+// resizePadToSquare, matToNCHW, and encodeFaceToBase64 are implemented in
+// img.go with pure-Go image handling (see rgbImage, resizePadToSquare,
+// rgbToNCHW, encodeFaceToBase64).
 
 // runDetect feeds a 640x640 NCHW blob through the SCRFD session and returns
 // every output tensor, copied into Go slices keyed by ONNX output name.
@@ -200,24 +130,23 @@ func (s *FaceServer) runRecognize(blob []float32) ([]float32, error) {
 // detectAndCrop112 runs SCRFD detection on the input frame, decodes bounding
 // boxes with the insightface distance decode, clamps the best box to frame
 // bounds, crops the ROI, and bilinearly resizes it to 112x112.
-func (s *FaceServer) detectAndCrop112(mat gocv.Mat) (gocv.Mat, [4]float32, error) {
-	h := mat.Rows()
-	w := mat.Cols()
+func (s *FaceServer) detectAndCrop112(img *rgbImage) (*rgbImage, [4]float32, error) {
+	h := img.h
+	w := img.w
 
-	canvas, scale, err := resizePadToSquare(mat, detInputSize)
+	canvas, scale, err := resizePadToSquare(img, detInputSize)
 	if err != nil {
-		return gocv.Mat{}, [4]float32{}, fmt.Errorf("prepare detection input: %w", err)
+		return nil, [4]float32{}, fmt.Errorf("prepare detection input: %w", err)
 	}
-	defer canvas.Close()
 
-	blob, err := matToNCHW(canvas, detInputSize, 128.0)
+	blob, err := rgbToNCHW(canvas, detInputSize, 128.0)
 	if err != nil {
-		return gocv.Mat{}, [4]float32{}, fmt.Errorf("build detection blob: %w", err)
+		return nil, [4]float32{}, fmt.Errorf("build detection blob: %w", err)
 	}
 
 	outs, err := s.runDetect(blob)
 	if err != nil {
-		return gocv.Mat{}, [4]float32{}, err
+		return nil, [4]float32{}, err
 	}
 
 	bestScore := float32(-1)
@@ -226,17 +155,17 @@ func (s *FaceServer) detectAndCrop112(mat gocv.Mat) (gocv.Mat, [4]float32, error
 	for _, lvl := range detLevels {
 		scores, ok := outs[lvl.scoreName]
 		if !ok {
-			return gocv.Mat{}, [4]float32{}, fmt.Errorf("missing detection output %q", lvl.scoreName)
+			return nil, [4]float32{}, fmt.Errorf("missing detection output %q", lvl.scoreName)
 		}
 		regs, ok := outs[lvl.regName]
 		if !ok {
-			return gocv.Mat{}, [4]float32{}, fmt.Errorf("missing detection output %q", lvl.regName)
+			return nil, [4]float32{}, fmt.Errorf("missing detection output %q", lvl.regName)
 		}
 
 		hw := detInputSize / lvl.stride
 		numAnchors := 2 * hw * hw
 		if len(scores) != numAnchors || len(regs) != numAnchors*4 {
-			return gocv.Mat{}, [4]float32{}, fmt.Errorf(
+			return nil, [4]float32{}, fmt.Errorf(
 				"detection output size mismatch for stride %d: scores=%d regs=%d (want %d/%d)",
 				lvl.stride, len(scores), len(regs), numAnchors, numAnchors*4)
 		}
@@ -267,7 +196,7 @@ func (s *FaceServer) detectAndCrop112(mat gocv.Mat) (gocv.Mat, [4]float32, error
 	}
 
 	if bestScore < detThreshold {
-		return gocv.Mat{}, [4]float32{}, fmt.Errorf("no face detected above confidence threshold %v", detThreshold)
+		return nil, [4]float32{}, fmt.Errorf("no face detected above confidence threshold %v", detThreshold)
 	}
 
 	// Map detection box from the 640 canvas back to original frame coordinates.
@@ -290,18 +219,15 @@ func (s *FaceServer) detectAndCrop112(mat gocv.Mat) (gocv.Mat, [4]float32, error
 	}
 
 	if bestX2 <= bestX1 || bestY2 <= bestY1 {
-		return gocv.Mat{}, [4]float32{}, fmt.Errorf("invalid bounding box: x1=%d y1=%d x2=%d y2=%d (w=%d h=%d)", bestX1, bestY1, bestX2, bestY2, w, h)
+		return nil, [4]float32{}, fmt.Errorf("invalid bounding box: x1=%d y1=%d x2=%d y2=%d (w=%d h=%d)", bestX1, bestY1, bestX2, bestY2, w, h)
 	}
 
-	roi := mat.Region(image.Rect(bestX1, bestY1, bestX2, bestY2))
-
-	cropped := gocv.NewMat()
-	if err := gocv.Resize(roi, &cropped, image.Point{recInputSize, recInputSize}, 0, 0, gocv.InterpolationLinear); err != nil {
-		cropped.Close()
-		roi.Close()
-		return gocv.Mat{}, [4]float32{}, fmt.Errorf("resize face crop: %w", err)
+	cropped, err := cropRegion(img, image.Rect(bestX1, bestY1, bestX2, bestY2))
+	if err != nil {
+		return nil, [4]float32{}, fmt.Errorf("crop face region: %w", err)
 	}
-	roi.Close()
+
+	cropped = bilinearResize(cropped, recInputSize, recInputSize)
 
 	normalizedBbox := [4]float32{
 		float32(bestX1) / float32(w),
@@ -315,8 +241,8 @@ func (s *FaceServer) detectAndCrop112(mat gocv.Mat) (gocv.Mat, [4]float32, error
 
 // extractEmbedding feeds a 112x112 face image through the ArcFace model and
 // returns a 512-dimensional embedding vector.
-func (s *FaceServer) extractEmbedding(mat gocv.Mat) ([]float32, error) {
-	blob, err := matToNCHW(mat, recInputSize, 127.5)
+func (s *FaceServer) extractEmbedding(img *rgbImage) ([]float32, error) {
+	blob, err := rgbToNCHW(img, recInputSize, 127.5)
 	if err != nil {
 		return nil, fmt.Errorf("build embedding blob: %w", err)
 	}
@@ -347,14 +273,4 @@ func bestEmbeddingScore(query []float32, embeddings [][]float32) float32 {
 		}
 	}
 	return best
-}
-
-// encodeFaceToBase64 encodes a gocv.Mat (BGR) to a base64-encoded JPEG string.
-func encodeFaceToBase64(mat gocv.Mat) (string, error) {
-	buf, err := gocv.IMEncode(gocv.JPEGFileExt, mat)
-	if err != nil {
-		return "", fmt.Errorf("encode face image: %w", err)
-	}
-	defer buf.Close()
-	return base64.StdEncoding.EncodeToString(buf.GetBytes()), nil
 }

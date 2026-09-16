@@ -12,7 +12,6 @@ import (
 	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
-	"gocv.io/x/gocv"
 )
 
 var (
@@ -208,24 +207,20 @@ func (s *FaceServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 // decodeImageFromRequest reads a multipart form field as a file, reads all
-// bytes, and decodes them into a gocv.Mat.
-func decodeImageFromRequest(r *http.Request, fieldName string) (gocv.Mat, error) {
+// bytes, and decodes them into an rgbImage.
+func decodeImageFromRequest(r *http.Request, fieldName string) (*rgbImage, error) {
 	file, _, err := r.FormFile(fieldName)
 	if err != nil {
-		return gocv.Mat{}, fmt.Errorf("invalid image field: %v", err)
+		return nil, fmt.Errorf("invalid image field: %v", err)
 	}
 	defer file.Close()
 
 	buf, err := io.ReadAll(file)
 	if err != nil {
-		return gocv.Mat{}, fmt.Errorf("failed to read image file: %v", err)
+		return nil, fmt.Errorf("failed to read image file: %v", err)
 	}
 
-	mat, err := gocv.IMDecode(buf, gocv.IMReadColor)
-	if err != nil || mat.Empty() {
-		return gocv.Mat{}, fmt.Errorf("unable to decode image format")
-	}
-	return mat, nil
+	return decodeRGB(buf)
 }
 
 // --- HTTP Handlers ---
@@ -247,21 +242,19 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mat, err := decodeImageFromRequest(r, "image")
+	img, err := decodeImageFromRequest(r, "image")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mat.Close()
 
-	cropped, _, err := s.detectAndCrop112(mat)
+	cropped, _, err := s.detectAndCrop112(img)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Face detection failed: " + err.Error()})
 		return
 	}
-	defer cropped.Close()
 
 	faceImage, imgErr := encodeFaceToBase64(cropped)
 	if imgErr != nil {
@@ -329,21 +322,19 @@ func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mat, err := decodeImageFromRequest(r, "image")
+	img, err := decodeImageFromRequest(r, "image")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mat.Close()
 
-	cropped, _, err := s.detectAndCrop112(mat)
+	cropped, _, err := s.detectAndCrop112(img)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Face detection failed: " + err.Error()})
 		return
 	}
-	defer cropped.Close()
 
 	faceImage, imgErr := encodeFaceToBase64(cropped)
 	if imgErr != nil {
@@ -417,110 +408,86 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	capture, err := gocv.OpenVideoCapture(rtspURL)
+	img, err := readRTSPFrame(rtspURL, 3*time.Second)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(StreamCheckResponse{
 			Status: "not ok",
-			Reason: "Failed to connect to RTSP stream",
+			Reason: "Failed to connect to RTSP stream: " + err.Error(),
 		})
 		return
 	}
-	defer capture.Close()
 
-	timeout := time.After(3 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	dur := func() OperationDuration {
-		return OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+	cropped, _, err := s.detectAndCrop112(img)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(StreamCheckResponse{
+			Status: "not ok",
+			Reason: "No face detected within 3 seconds",
+		})
+		return
 	}
 
+	queryVec, err := s.extractEmbedding(cropped)
+	faceImage, imgErr := encodeFaceToBase64(cropped)
+	if imgErr != nil {
+		s.log.Error().Err(imgErr).Msg("failed to encode face image")
+	}
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(StreamCheckResponse{
+			Status: "not ok",
+			Reason: "No face detected within 3 seconds",
+		})
+		return
+	}
+
+	s.mu.RLock()
 	var bestMatch string
 	var highestScore float32 = -1.0
-
-	// Audit entries are accumulated across the sampling loop and flushed in a
-	// single bbolt transaction (one fsync) instead of one transaction per
-	// frame, keeping the 100ms sampling cadence unblocked.
-	var pendingAudits []AuditEntry
-	defer func() {
-		if len(pendingAudits) > 0 {
-			if err := s.storeAudit(pendingAudits); err != nil {
-				s.log.Error().Err(err).Msg("failed to write stream-check audit entries")
-			}
-		}
-	}()
-
-	for {
-		select {
-		case <-timeout:
-			reason := "No face detected within 3 seconds"
-			if highestScore > -1.0 {
-				reason = fmt.Sprintf("Unrecognized face detected (highest score: %.2f)", highestScore)
-			}
-			json.NewEncoder(w).Encode(StreamCheckResponse{
-				OperationDuration: dur(),
-				Status:            "not ok",
-				Reason:            reason,
-				Similarity:        highestScore,
-			})
-			return
-
-		case <-ticker.C:
-			img := gocv.NewMat()
-			if !capture.Read(&img) || img.Empty() {
-				img.Close()
-				continue
-			}
-
-			cropped, _, err := s.detectAndCrop112(img)
-			img.Close()
-			if err != nil {
-				cropped.Close()
-				continue
-			}
-
-			queryVec, err := s.extractEmbedding(cropped)
-			faceImage, imgErr := encodeFaceToBase64(cropped)
-			if imgErr != nil {
-				s.log.Error().Err(imgErr).Msg("failed to encode face image")
-			}
-			cropped.Close()
-			if err != nil {
-				continue
-			}
-
-			s.mu.RLock()
-			for name, knownVecs := range s.dbMap {
-				score := bestEmbeddingScore(queryVec, knownVecs)
-				if score > highestScore {
-					highestScore = score
-					bestMatch = name
-				}
-			}
-			s.mu.RUnlock()
-
-			pendingAudits = append(pendingAudits, AuditEntry{
-				Time:       time.Now(),
-				Endpoint:   "stream-check",
-				Name:       bestMatch,
-				Similarity: highestScore,
-				Matched:    highestScore >= s.threshold,
-				DurationMs: dur().DurationMs,
-				FaceImage:  faceImage,
-			})
-
-			if highestScore >= s.threshold {
-				json.NewEncoder(w).Encode(StreamCheckResponse{
-					OperationDuration: dur(),
-					Status:            "ok",
-					Name:              bestMatch,
-					Similarity:        highestScore,
-				})
-				return
-			}
+	for name, knownVecs := range s.dbMap {
+		score := bestEmbeddingScore(queryVec, knownVecs)
+		if score > highestScore {
+			highestScore = score
+			bestMatch = name
 		}
 	}
+	s.mu.RUnlock()
+
+	dur := OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+
+	auditEntry := AuditEntry{
+		Time:       time.Now(),
+		Endpoint:   "stream-check",
+		Name:       bestMatch,
+		Similarity: highestScore,
+		Matched:    highestScore >= s.threshold,
+		DurationMs: dur.DurationMs,
+		FaceImage:  faceImage,
+	}
+	if highestScore >= s.threshold {
+		if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
+			s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
+		}
+		json.NewEncoder(w).Encode(StreamCheckResponse{
+			OperationDuration: dur,
+			Status:            "ok",
+			Name:              bestMatch,
+			Similarity:        highestScore,
+		})
+		return
+	}
+
+	if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
+		s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
+	}
+	reason := "No face detected within 3 seconds"
+	json.NewEncoder(w).Encode(StreamCheckResponse{
+		OperationDuration: dur,
+		Status:            "not ok",
+		Reason:            reason,
+		Similarity:        highestScore,
+	})
 }
 
 func (s *FaceServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
