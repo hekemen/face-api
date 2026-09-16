@@ -1,14 +1,15 @@
 # --- Stage 1: Build ---
-# Pure-Go build (CGO_ENABLED=0): no OpenCV, no gcc, no pkg-config. The binary
-# is fully portable and cross-compiles natively (e.g. GOARCH=arm64) without an
-# emulator. BuildKit injects TARGETARCH automatically when building with buildx
-# (--platform), e.g. arm64 for the Raspberry Pi. Plain `docker build`
-# (testcontainers e2e) has no --platform and leaves TARGETARCH empty, so the
-# ${...:-amd64} default resolves it to the host arch. Do NOT give TARGETARCH a
-# plain =amd64 default: that shadows buildx's per-platform value and makes
-# cross-arch builds silently produce amd64 content.
+# Pure-Go build (CGO_ENABLED=0): no OpenCV, no gcc, no pkg-config. The builder
+# stage runs on BUILDPLATFORM (the host / native arch) and cross-compiles for
+# TARGETARCH via GOARCH, so the arm64 image never needs QEMU at compile time —
+# it is built natively in ~1.5s even on an amd64 machine. TARGETARCH (a
+# global/--platform ARG injected by buildx) is NOT visible inside the stage
+# unless redeclared; same for BUILDPLATFORM. Plain `docker build`
+# (testcontainers e2e) leaves TARGETARCH empty, so ${TARGETARCH:-amd64} falls
+# back to the host arch. Do NOT give TARGETARCH a plain =amd64 default: that
+# shadows buildx's per-platform value.
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.27-trixie AS builder
 ARG TARGETARCH
-FROM --platform=linux/${TARGETARCH:-amd64} golang:1.27-trixie AS builder
 
 WORKDIR /app
 
@@ -16,9 +17,9 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code and build the pure-Go binary
+# Copy source code and cross-compile the pure-Go binary for TARGETARCH.
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o face-api ./cmd/face-api
+RUN CGO_ENABLED=0 GOARCH=${TARGETARCH:-amd64} go build -ldflags="-s -w" -o face-api ./cmd/face-api
 
 # --- Stage 2: Runtime ---
 FROM --platform=linux/${TARGETARCH:-amd64} debian:trixie-slim
