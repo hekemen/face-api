@@ -1,5 +1,7 @@
 # --- Stage 1: Build ---
-# BuildKit injects TARGETARCH automatically when building with buildx
+# Pure-Go build (CGO_ENABLED=0): no OpenCV, no gcc, no pkg-config. The binary
+# is fully portable and cross-compiles natively (e.g. GOARCH=arm64) without an
+# emulator. BuildKit injects TARGETARCH automatically when building with buildx
 # (--platform), e.g. arm64 for the Raspberry Pi. Plain `docker build`
 # (testcontainers e2e) has no --platform and leaves TARGETARCH empty, so the
 # ${...:-amd64} default resolves it to the host arch. Do NOT give TARGETARCH a
@@ -8,35 +10,22 @@
 ARG TARGETARCH
 FROM --platform=linux/${TARGETARCH:-amd64} golang:1.27-trixie AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgtk-3-dev libavcodec-dev libavformat-dev libswscale-dev \
-    libopencv-dev pkg-config curl && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Cache Go modules
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code and build Cgo binary
+# Copy source code and build the pure-Go binary
 COPY . .
-# Full-performance build. CGO_LDFLAGS=-lstdc++ guarantees the final cgo link
-# resolves gocv's C++ OpenCV symbols (libstdc++) even if Go picks gcc as the
-# external linker.
-ENV CGO_ENABLED=1 CGO_LDFLAGS="-lstdc++"
-RUN go build -ldflags="-s -w" -o face-api ./cmd/face-api
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o face-api ./cmd/face-api
 
 # --- Stage 2: Runtime ---
 FROM --platform=linux/${TARGETARCH:-amd64} debian:trixie-slim
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgtk-3-0 libavcodec61 libavformat61 libswscale8 \
-    libopencv-core410 libopencv-imgproc410 libopencv-highgui410 \
-    libopencv-videoio410 libopencv-imgcodecs410 libopencv-video410 \
-    libopencv-objdetect410 libopencv-photo410 \
-    libstdc++6 ca-certificates curl && \
+    ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
