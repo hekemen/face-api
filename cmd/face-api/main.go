@@ -132,6 +132,12 @@ func main() {
 		}()
 	}
 
+	// Start HTTP server in a goroutine.
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- httpServer.ListenAndServe()
+	}()
+
 	// Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -147,4 +153,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	httpServer.Shutdown(ctx)
+
+	// Drain server error (if any).
+	select {
+	case err := <-serverErr:
+		if err != nil && err != http.ErrServerClosed {
+			logger.Error().Err(err).Msg("HTTP server error")
+		}
+	default:
+	}
 }
