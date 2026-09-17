@@ -49,3 +49,11 @@ extraEnv:
     value: "true"
   - name: RTSP_URL
     value: rtsp://admin:IzmirAlmere123!@192.168.178.23:554/h264Preview_01_main
+  - name: MQTT_BROKER_URL
+    value: "tcp://mosquitto.mqtt.svc.cluster.local:1883"
+  - name: MQTT_CLIENT_ID
+    value: "face-api"
+  - name: MQTT_BASE_TOPIC
+    value: "face/scan"
+  - name: MQTT_DEVICE_NAME
+    value: "Face API"
