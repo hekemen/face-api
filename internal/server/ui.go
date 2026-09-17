@@ -11,6 +11,9 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 //go:embed templates/*.html templates/pico.min.css
@@ -47,7 +50,7 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch path {
-	case "enroll":
+	case "enroll", "enroll/delete":
 		s.handleUIEnroll(w, r)
 	case "recognize":
 		s.handleUIRecognize(w, r)
@@ -266,11 +269,58 @@ func (s *FaceServer) handleUIAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *FaceServer) handleUIStats(w http.ResponseWriter, r *http.Request) {
-	// Always fetch stats from the API for the initial page render.
-	result, _ := s.proxyAPI(w, r, "/stats")
-	var resp StatsResponse
-	if err := json.Unmarshal([]byte(result), &resp); err != nil {
-		resp = StatsResponse{}
+	var entries []AuditEntry
+	err := s.boltDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(auditBucketName)
+		if b == nil {
+			return nil
+		}
+		entries = make([]AuditEntry, 0)
+		return b.ForEach(func(_, v []byte) error {
+			var e AuditEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return nil
+			}
+			entries = append(entries, e)
+			return nil
+		})
+	})
+	if err != nil {
+		http.Error(w, "Failed to read audit log", http.StatusInternalServerError)
+		return
 	}
-	s.renderTemplate(w, "stats.html", UIPage{Stats: &resp})
+
+	totalChecks := len(entries)
+	totalMatched := 0
+	totalNoFace := 0
+	totalNotMatched := 0
+	var lastMatched time.Time
+
+	for _, e := range entries {
+		if e.Matched {
+			totalMatched++
+			if e.Time.After(lastMatched) {
+				lastMatched = e.Time
+			}
+		} else if e.Name == "" {
+			totalNoFace++
+		} else {
+			totalNotMatched++
+		}
+	}
+
+	var lastMatchedStr *string
+	if !lastMatched.IsZero() {
+		t := lastMatched.Format(time.RFC3339)
+		lastMatchedStr = &t
+	}
+
+	stats := &StatsResponse{
+		TotalChecks:     totalChecks,
+		TotalMatched:    totalMatched,
+		TotalNoFace:     totalNoFace,
+		TotalNotMatched: totalNotMatched,
+		LastMatched:     lastMatchedStr,
+	}
+	s.renderTemplate(w, "stats.html", UIPage{Stats: stats})
 }
