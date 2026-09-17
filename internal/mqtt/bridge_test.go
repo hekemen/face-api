@@ -16,7 +16,7 @@ func TestBridgeDisabledWhenNoBroker(t *testing.T) {
 		DeviceName:      "Test",
 		DiscoveryPrefix: "homeassistant",
 	}
-	b, err := New(cfg, func() (server.StreamCheckResponse, error) {
+	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
 		return server.StreamCheckResponse{Status: "ok"}, nil
 	})
 	if err != nil {
@@ -31,7 +31,7 @@ func TestBridgeDefaults(t *testing.T) {
 	cfg := Config{
 		BrokerURL: "tcp://127.0.0.1:1883",
 	}
-	b, err := New(cfg, func() (server.StreamCheckResponse, error) {
+	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
 		return server.StreamCheckResponse{Status: "ok"}, nil
 	})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestBridgeQueueDrop(t *testing.T) {
 		DiscoveryPrefix: "homeassistant",
 	}
 	callCount := 0
-	b, err := New(cfg, func() (server.StreamCheckResponse, error) {
+	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
 		callCount++
 		return server.StreamCheckResponse{Status: "ok"}, nil
 	})
@@ -107,12 +107,12 @@ type mockMessage struct {
 	payload string
 }
 
-func (m mockMessage) Topic() string            { return "" }
-func (m mockMessage) Duplicate() bool          { return false }
-func (m mockMessage) Qos() byte                { return 0 }
-func (m mockMessage) Retained() bool           { return false }
-func (m mockMessage) MessageID() uint16        { return 0 }
-func (m mockMessage) Ack()                     {}
-func (m mockMessage) Payload() []byte          { return []byte(m.payload) }
-func (m mockMessage) Client() interface{}      { return nil }
+func (m mockMessage) Topic() string                 { return "" }
+func (m mockMessage) Duplicate() bool               { return false }
+func (m mockMessage) Qos() byte                     { return 0 }
+func (m mockMessage) Retained() bool                { return false }
+func (m mockMessage) MessageID() uint16             { return 0 }
+func (m mockMessage) Ack()                          {}
+func (m mockMessage) Payload() []byte               { return []byte(m.payload) }
+func (m mockMessage) Client() interface{}           { return nil }
 func (m mockMessage) Acknowledged() <-chan struct{} { return nil }

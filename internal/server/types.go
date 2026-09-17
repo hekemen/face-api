@@ -63,3 +63,13 @@ type UsersListResponse struct {
 	OperationDuration
 	Users []UserInfo `json:"users"`
 }
+
+// StatsResponse is returned by the GET /stats endpoint.
+type StatsResponse struct {
+	OperationDuration   `json:",inline"`
+	TotalChecks     int     `json:"total_checks"`
+	TotalMatched    int     `json:"total_matched"`
+	TotalNoFace     int     `json:"total_no_face"`
+	TotalNotMatched int     `json:"total_not_matched"`
+	LastMatched     *string `json:"last_matched"`
+}

@@ -271,7 +271,9 @@ func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/recognize", s.handleRecognize)
 	mux.HandleFunc("/stream-check", s.handleStreamCheck)
 	mux.HandleFunc("/users", s.handleListUsers)
+	mux.HandleFunc("/users/", s.handleDeleteUser)
 	mux.HandleFunc("/audit", s.handleListAudit)
+	mux.HandleFunc("/stats", s.handleListStats)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
 
@@ -697,4 +699,111 @@ func (s *FaceServer) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		Count:             len(entries),
 		Entries:           entries,
 	})
+}
+
+// handleListStats computes aggregate statistics from the full audit log.
+func (s *FaceServer) handleListStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
+
+	var entries []AuditEntry
+	err := s.boltDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(auditBucketName)
+		if b == nil {
+			return nil
+		}
+		entries = make([]AuditEntry, 0)
+		return b.ForEach(func(_, v []byte) error {
+			var e AuditEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return nil
+			}
+			entries = append(entries, e)
+			return nil
+		})
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read audit log"})
+		return
+	}
+
+	totalChecks := len(entries)
+	totalMatched := 0
+	totalNoFace := 0
+	totalNotMatched := 0
+	var lastMatched time.Time
+
+	for _, e := range entries {
+		if e.Matched {
+			totalMatched++
+			if e.Time.After(lastMatched) {
+				lastMatched = e.Time
+			}
+		} else if e.Name == "" {
+			totalNoFace++
+		} else {
+			totalNotMatched++
+		}
+	}
+
+	var lastMatchedStr *string
+	if !lastMatched.IsZero() {
+		t := lastMatched.Format(time.RFC3339)
+		lastMatchedStr = &t
+	}
+
+	json.NewEncoder(w).Encode(StatsResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		TotalChecks:       totalChecks,
+		TotalMatched:      totalMatched,
+		TotalNoFace:       totalNoFace,
+		TotalNotMatched:   totalNotMatched,
+		LastMatched:       lastMatchedStr,
+	})
+}
+
+// handleDeleteUser removes a user from the Faces bucket and in-memory cache.
+func (s *FaceServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	name := r.URL.Path[len("/users/"):]
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing user name"})
+		return
+	}
+
+	s.deleteUser(name)
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "deleted",
+		"name":   name,
+	})
+}
+
+// deleteUser removes a user from the Faces bucket and in-memory cache.
+func (s *FaceServer) deleteUser(name string) {
+	// Delete from bbolt.
+	err := s.boltDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return nil
+		}
+		return b.Delete([]byte(name))
+	})
+	if err != nil {
+		s.log.Error().Err(err).Str("name", name).Msg("failed to delete user from bbolt")
+	}
+
+	// Delete from in-memory cache.
+	s.mu.Lock()
+	delete(s.dbMap, name)
+	s.mu.Unlock()
 }

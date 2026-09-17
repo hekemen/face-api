@@ -1,15 +1,21 @@
 {{template "head" .}}
-<div class="container">
 <h1>Enrolled Users</h1>
 {{if .Users}}
 <table>
-<tr><th>Name</th></tr>
+<thead>
+<tr><th>Name</th><th>Pictures</th><th>Updated</th></tr>
+</thead>
+<tbody>
 {{range .Users}}
-<tr><td>{{.}}</td></tr>
+<tr>
+<td>{{.Name}}</td>
+<td>{{if .Pictures}}{{range .Pictures}}{{if .}}<img class="face-thumb" src="data:image/jpeg;base64,{{.}}">{{end}}{{end}}{{else}}<span class="muted">no pictures</span>{{end}}</td>
+<td>{{if .UpdatedAt.IsZero}}never{{else}}{{.UpdatedAt.Format "2006-01-02 15:04"}}{{end}}</td>
+</tr>
 {{end}}
+</tbody>
 </table>
 {{else}}
 <p>No users enrolled yet.</p>
 {{end}}
-</div>
 {{template "foot" .}}

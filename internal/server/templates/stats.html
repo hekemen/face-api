@@ -1,0 +1,47 @@
+{{template "head" .}}
+<h1>Statistics</h1>
+<div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0;">
+  <div class="stat-card" style="background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-align: center;">
+    <div style="font-size: 2rem; font-weight: 700; color: var(--pico-primary);">{{.Stats.TotalChecks}}</div>
+    <div style="color: var(--pico-muted-color); font-size: 0.85rem;">Total Checks</div>
+  </div>
+  <div class="stat-card" style="background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-align: center;">
+    <div style="font-size: 2rem; font-weight: 700; color: var(--pico-success);">{{.Stats.TotalMatched}}</div>
+    <div style="color: var(--pico-muted-color); font-size: 0.85rem;">Matched</div>
+  </div>
+  <div class="stat-card" style="background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-align: center;">
+    <div style="font-size: 2rem; font-weight: 700; color: var(--pico-warning);">{{.Stats.TotalNoFace}}</div>
+    <div style="color: var(--pico-muted-color); font-size: 0.85rem;">No Face</div>
+  </div>
+  <div class="stat-card" style="background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-align: center;">
+    <div style="font-size: 2rem; font-weight: 700; color: var(--pico-error);">{{.Stats.TotalNotMatched}}</div>
+    <div style="color: var(--pico-muted-color); font-size: 0.85rem;">Not Matched</div>
+  </div>
+</div>
+{{if .Stats.LastMatched}}
+<p>Last matched: <strong>{{.Stats.LastMatched}}</strong></p>
+{{else}}
+<p>No matches recorded yet.</p>
+{{end}}
+<p style="color: var(--pico-muted-color); font-size: 0.85rem;">— auto-refreshes every 30s</p>
+<script>
+(function() {
+  setInterval(function() {
+    fetch('stats')
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        var cards = document.querySelectorAll('.stat-card div:first-child');
+        if (cards[0]) cards[0].textContent = data.total_checks;
+        if (cards[1]) cards[1].textContent = data.total_matched;
+        if (cards[2]) cards[2].textContent = data.total_no_face;
+        if (cards[3]) cards[3].textContent = data.total_not_matched;
+        var lastEl = document.querySelector('p:last-of-type');
+        if (data.last_matched) {
+          lastEl.textContent = 'Last matched: ' + data.last_matched;
+        }
+      })
+      .catch(function(err) { console.error('Stats refresh failed:', err); });
+  }, 30000);
+})();
+</script>
+{{template "foot" .}}
