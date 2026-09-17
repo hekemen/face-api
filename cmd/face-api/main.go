@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
+	"h2hsecure.com/face/internal/mqtt"
 	"h2hsecure.com/face/internal/server"
 )
 
@@ -86,9 +91,60 @@ func main() {
 		log.Fatalf("Failed to create face server: %v", err)
 	}
 
+	// 4. Set up MQTT bridge if configured
+	var mqttBridge *mqtt.Bridge
+	if brokerURL := os.Getenv("MQTT_BROKER_URL"); brokerURL != "" {
+		queueDepth := 16
+		if qd := os.Getenv("MQTT_QUEUE_DEPTH"); qd != "" {
+			if d, err := strconv.Atoi(qd); err == nil && d > 0 {
+				queueDepth = d
+			}
+		}
+		mqttCfg := mqtt.Config{
+			BrokerURL:       brokerURL,
+			Username:        os.Getenv("MQTT_USERNAME"),
+			Password:        os.Getenv("MQTT_PASSWORD"),
+			ClientID:        os.Getenv("MQTT_CLIENT_ID"),
+			BaseTopic:       os.Getenv("MQTT_BASE_TOPIC"),
+			DeviceName:      os.Getenv("MQTT_DEVICE_NAME"),
+			QueueDepth:      queueDepth,
+			DiscoveryPrefix: "homeassistant",
+		}
+		mqttBridge, err = mqtt.New(mqttCfg, srv.RunStreamCheck)
+		if err != nil {
+			logger.Error().Err(err).Msg("failed to create MQTT bridge")
+		}
+	}
+
 	mux := http.NewServeMux()
 	srv.RegisterHandlers(mux)
 
 	logger.Info().Msg("Face API Server running on http://localhost:8081")
-	log.Fatal(http.ListenAndServe(":8081", srv.RequestLogging(mux)))
+
+	httpServer := &http.Server{Addr: ":8081", Handler: srv.RequestLogging(mux)}
+
+	// Start MQTT bridge if configured.
+	if mqttBridge != nil {
+		go func() {
+			if err := mqttBridge.Run(context.Background()); err != nil {
+				logger.Error().Err(err).Msg("MQTT bridge error")
+			}
+		}()
+	}
+
+	// Wait for shutdown signal.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	logger.Info().Str("signal", sig.String()).Msg("shutting down")
+
+	// Stop MQTT bridge first (drain, publish offline, disconnect).
+	if mqttBridge != nil {
+		mqttBridge.Stop()
+	}
+
+	// Stop HTTP server with timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpServer.Shutdown(ctx)
 }

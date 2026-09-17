@@ -61,6 +61,20 @@ persistence:
 extraEnv:
   - name: ENABLE_UI
     value: "true"
+  - name: MQTT_BROKER_URL
+    value: ""
+  - name: MQTT_USERNAME
+    value: ""
+  - name: MQTT_PASSWORD
+    value: ""
+  - name: MQTT_CLIENT_ID
+    value: "face-api"
+  - name: MQTT_BASE_TOPIC
+    value: "face/scan"
+  - name: MQTT_DEVICE_NAME
+    value: "Face API"
+  - name: MQTT_QUEUE_DEPTH
+    value: "16"
 
 # Kubernetes liveness/readiness probes. Both hit lightweight HTTP endpoints
 # (/healthz returns 200 whenever the process is alive; /readyz returns 200 only
