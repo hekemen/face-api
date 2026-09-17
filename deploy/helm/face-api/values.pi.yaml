@@ -5,7 +5,7 @@ image:
   # Always pull: the Pi cluster caches "latest" by digest (IfNotPresent would
   # silently keep running a stale image after a new push).
   pullPolicy: Always
-  tag: "latest"
+  tag: "stats"
 
 imagePullSecrets:
   - name: ghcr-pull
