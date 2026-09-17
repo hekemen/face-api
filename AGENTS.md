@@ -1,14 +1,14 @@
 # Face API - Agent Documentation
 
 ## Project Overview
-Face API is a Go-based face recognition server that runs two ONNX models (SCRFD face detection + ArcFace recognition) through the ONNX Runtime shared library via pure-Go bindings. OpenCV (via gocv) is used for image I/O and processing only. The server provides REST API endpoints for enrolling faces, recognizing faces in images, checking RTSP streams, and listing enrolled users.
+Face API is a Go-based face recognition server that runs two ONNX models (SCRFD face detection + ArcFace recognition) through the ONNX Runtime shared library via pure-Go bindings. The image and RTSP pipelines are pure Go (no gocv/OpenCV). The server provides REST API endpoints for enrolling faces, recognizing faces in images, checking RTSP streams, and listing enrolled users.
 
 ## Architecture
 
 ### Core Components
 - **FaceServer** (`internal/server/face.go`): Main struct holding the in-memory cache, the persistent bbolt datastore, and the two ONNX Runtime inference sessions (detection + recognition).
 - **HTTP Server** (`cmd/face-api/main.go`, `internal/server/server.go`): Standard Go HTTP server on port 8081 with handler registration and model loading.
-- **Inference**: `onnxruntime-purego` loads `libonnxruntime.so` and runs both ONNX models on the CPU. gocv is used only for image decode, resize, crop, blob layout, and RTSP capture.
+- **Inference**: `onnxruntime-purego` loads `libonnxruntime.so` and runs both ONNX models on the CPU. Image decode/resize/crop/blob layout and RTSP capture are pure Go.
 - **Data Persistence**: bbolt database (`faces.db`) for storing face embeddings with an in-memory cache for fast lookups.
 
 ### API Endpoints
@@ -22,7 +22,9 @@ Face API is a Go-based face recognition server that runs two ONNX models (SCRFD 
 
 ### Request/Response Format
 - All endpoints accept `multipart/form-data` with `image` field
-- `/enroll` also requires `name` field; repeat calls with the same `name` append pictures up to a max of **3** per user (4th returns 400). Stored embeddings are a JSON array-of-arrays; legacy single-embedding values are migrated on startup.
+- `/enroll` also requires `name` field; repeat calls with the same `name` append pictures up to a max of **3** per user (4th returns 400). Stored value is a JSON `storedUser` object `{"embeddings":[[...],[...]],"pictures":["jpeg-b64",...],"updated_at":"RFC3339"}`; the cropped 112×112 face JPEG (base64, same as the audit `face_image`) is stored alongside each embedding, and `updated_at` is set on every enrollment. Legacy flat / nested embedding-array values are transparently upgraded to `storedUser` on load (`unmarshalUser`).
+- `GET /users` (single-doc change below) returns `{"users":[{"name":"string","pictures":["jpeg-b64",...],"updated_at":"RFC3339"}], "duration_ms": int}` (sorted by name). Pictures hold up to 3 enrolled face JPEGs (base64); `updated_at` is the last enrollment time.
+- **Startup backfill**: for users whose stored value predates the picture feature (or has empty pictures), `backfillUsersFromAudit` (`internal/server/server.go`) scans the `"Audit"` bucket for **ENROLL** rows and recovers up to 3 pictures (in enrollment order) plus the latest enroll time as `updated_at`. Non-enroll rows (recognize / stream-check) never backfill pictures. Users with no enroll rows get `updated_at` = hydration timestamp.
 - `/stream-check` accepts an optional `rtsp_url` form field; if omitted it falls back to the `RTSP_URL` env var / config value (400 only if neither is set)
 - Every success/business response includes a `duration_ms` integer (operation wall-clock time)
 - Recognition returns: `{"name": "string", "similarity": float, "matched": bool, "duration_ms": int}`
@@ -33,32 +35,53 @@ Face API is a Go-based face recognition server that runs two ONNX models (SCRFD 
 ### Request Logging & Audit Trail
 - **Request logging**: every HTTP request is logged to stdout as a JSON zerolog line with `method`, `path`, `status`, `remote`, and `duration_ms` via `FaceServer.RequestLogging` middleware (`internal/server/server.go`, `statusRecorder` wrapper). **`/healthz` and `/readyz` probes are skipped** so they do not pollute the log stream.
 - **Audit trail**: every face scan (enroll, recognize, and each stream-check frame that produced an embedding) is persisted to a bbolt `"Audit"` bucket with a timestamp. **Audit entries are only written when a face is detected** — a no-face request (e.g. solid-color image) produces no entry. Keys are `NextSequence()` (big-endian uint64), values are JSON `AuditEntry` structs.
-- **bbolt write constraint**: audit entries are accumulated during a request and flushed in a **single `db.Update` transaction** (`storeAudit`) — stream-check samples ~30 frames in 3 seconds, so writing one transaction per frame would cost 30 fsyncs/pages and stall the 100ms sampling loop. Never write audit rows inside the per-frame loop; batch and flush once at request end.
+- **bbolt write constraint**: audit entries are batch-written in a **single `db.Update` transaction** (`storeAudit`). Never write audit rows inside a frame/loop; batch and flush once at request end.
+
+### Web UI (`/ui/`, gated by `ENABLE_UI=true`)
+- Served from embedded templates (`internal/server/templates/*.html`) via `RegisterUIHandlers` (`internal/server/ui.go`); pages: index, enroll, recognize, stream-check, users, audit. `renderTemplate` parses `templates/<page>.html` **before** `templates/shared.html` so the root template is the page (putting shared.html first yields a blank 2-byte page — the returned `*template.Template` is named after the first file).
+- **Nav links, form `action`s, and the audit auto-refresh `fetch()` are relative** (`action="enroll"`, `href="users"`, `fetch('audit')`) — NOT absolute `/ui/...` — so the UI works both at root and behind the Traefik `stripPrefix` ingress (`http://pi.home.arpa/face/ui/`). Do not reintroduce absolute `/ui/` URLs.
+- UI forms **proxy in-process** via `FaceServer.proxyAPI` (`internal/server/ui.go`): it rewrites the request path to the API endpoint and dispatches through `s.mux` (set in `RegisterHandlers`) into an `httptest.ResponseRecorder`, copying the body + status. Do NOT switch this back to an HTTP round-trip — `http.Client` rejects bare paths like `/enroll` ("unsupported protocol scheme") and a full-URL proxy would recurse through the ingress from inside the pod.
+- **Styling**: PicoCSS v2 (`internal/server/templates/pico.min.css`, MIT, vendored — no CDN) is served by the app at `/ui/pico.min.css` via `serveStatic` from the embed. The embed directive is `//go:embed templates/*.html templates/pico.min.css`; adding another asset requires extending it. Each page's `<link rel="stylesheet" href="pico.min.css">` is **relative** (same stripPrefix constraint as nav links). `shared.html` only holds small Pico overrides (sticky nav, `.face-thumb`, `.face-preview`, `.result`, `#cameraStage`).
+- **Templates**: `shared.html` defines `{{define "head"}}` (opens `<html>`/`<body>`, nav, `<main class="container">`), `{{define "foot"}}` (closes `</main>`, footer, `</body></html>`), plus the reusable `{{define "camera"}}` and `{{define "imagepreview"}}` script blocks. Pages call `{{template "head" .}}` … content … `{{template "foot" .}}` and **must not** re-add their own `<div class="container">` (the container is in `head`).
+- **Webcam capture** (enroll + recognize): pages include `{{template "camera" .}}`; it grabs a frame from `getUserMedia` into a hidden `<canvas>`, converts to a JPEG `File`, and assigns it to the existing `input[name="image"]` via `DataTransfer` so the normal multipart submit/proxy path is unchanged. `{{template "imagepreview" .}}` shows the selected/captured file in `#preview`. The camera script is **only** on pages with an image input (not stream-check). `getUserMedia` requires a secure context (HTTPS or localhost): on plain-HTTP hosts the script hides the camera section and shows a "Camera needs HTTPS or localhost. Use file upload instead." notice, leaving file upload as the fallback. There is no TLS on the Pi cluster, so remote browsers get the notice by design.
+
+### MQTT Integration (Home Assistant Discovery)
+
+- **Package**: `internal/mqtt/bridge.go` — `Bridge` type manages the MQTT connection, HA discovery, trigger subscription, and result publishing.
+- **Library**: `github.com/eclipse/paho.mqtt.golang` (MQTT 3.1.1, pure Go, no CGO).
+- **Broker**: Mosquitto 2.0.21 in `mqtt` namespace, `mosquitto.mqtt.svc.cluster.local:1883`, `allow_anonymous true`.
+- **Config**: Env vars — `MQTT_BROKER_URL` (empty = disabled), `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_CLIENT_ID`, `MQTT_BASE_TOPIC` (default: `face/scan`), `MQTT_DEVICE_NAME`, `MQTT_QUEUE_DEPTH` (default: 16, bounded, drop oldest).
+- **Startup/Shutdown**: If `MQTT_BROKER_URL` empty → MQTT disabled. If set but unreachable → retry with backoff, app continues. SIGINT/SIGTERM → stop bridge (drain, publish offline, disconnect), then stop HTTP.
+- **Topics**: Base topic `face/scan` (configurable via `MQTT_BASE_TOPIC`). Derived: `<base>/trigger` (subscribe), `<base>/result` (publish retained JSON), `<base>/matched` (publish retained JSON), `<base>/availability` (LWT + retained online/offline).
+- **HA Discovery**: Three entities — `sensor.face_api_last_result` (state: recognized name), `binary_sensor.face_api_matched` (on/off), `button.face_api_check` (triggers check). Device: `face_api`.
+- **Concurrency**: Trigger queue (bounded channel) + worker goroutine. If queue full, drop oldest and log warning.
+- **Shared logic**: `RunStreamCheck` (`internal/server/server.go`) is the shared core logic used by both the HTTP handler and the MQTT bridge.
 
 ## Dependencies
 
 ### Go Direct Dependencies
 - `github.com/shota3506/onnxruntime-purego` - Pure-Go ONNX Runtime bindings; dynamically loads `libonnxruntime.so` (no cgo in the inference path)
 - `github.com/rs/zerolog` - structured JSON logging (request logging + error logging)
-- `gocv.io/x/gocv v0.31.0` - OpenCV Go bindings for **image processing** (decode, resize, crop, RTSP capture) — not inference
+- `github.com/liqmix/govid/h264` - pure-Go H.264 software decoder (via `github.com/liqmix/govid`); used for `/stream-check` on H.264 RTSP cameras (no cgo)
 - `go.etcd.io/bbolt v1.3.11` - Persistent key-value storage for face embeddings
+- `github.com/eclipse/paho.mqtt.golang` - MQTT 3.1.1 client for Home Assistant integration (pure Go, no CGO)
 
 ### Runtime Library
 - `libonnxruntime.so` (ONNX Runtime 1.23.0) is required at runtime: bundled in the Docker image, or fetched locally by `make download-libonnxruntime` into `lib/` and made visible via `LD_LIBRARY_PATH`.
 
 ### System Dependencies (Dockerfile)
-- **Build stage**: `libgtk-3-dev`, `libavcodec-dev`, `libavformat-dev`, `libswscale-dev`, `libopencv-dev`, `pkg-config` (OpenCV headers needed only to compile gocv) plus `curl` to fetch `libonnxruntime.so`
-- **Runtime stage**: `libgtk-3-0`, `libavcodec59`, `libavformat59`, `libswscale6`, `libopencv-highgui4.6`, `libopencv-imgproc4.6`, `libopencv-core4.6`, `libopencv-videoio4.6`, `libopencv-imgcodecs4.6`, `libopencv-video4.6`, `libopencv-objdetect4.6`, `libopencv-photo4.6`
+- **Build stage**: `golang:1.27-trixie` (pure-Go build, no OpenCV/gcc/pkg-config) + `curl` to fetch `libonnxruntime.so`
+- **Runtime stage**: `debian:bookworm-slim` with the runtime libraries for ONNX Runtime only (no OpenCV)
 
 ## Build Process
 
 ### Local Build
 ```bash
-make build                    # Downloads models, builds Go binary with CGO_ENABLED=1
+make build                    # Downloads models, builds Go binary
 make download-libonnxruntime  # Fetches libonnxruntime.so (host arch) into lib/
 make run                      # Build + fetch lib + run on port 8081 (sets LD_LIBRARY_PATH)
 ```
-Local compilation requires OpenCV dev headers and pkg-config matching gocv v0.31.0. If the host lacks them, build and test inside Docker (`make test`).
+The build is pure Go (no OpenCV/gocv) — no system C dependencies are needed to compile.
 
 ### Docker Build
 ```bash
@@ -69,8 +92,8 @@ make docker-run         # Build and run with volume-mounted faces.db
 ```
 
 ### Multi-Stage Dockerfile
-1. **Builder stage**: `golang:1.27-bookworm` with OpenCV dev dependencies; downloads `libonnxruntime.so` (1.23.0, arch-aware via `TARGETARCH`); compiles the Go binary (`go build .`).
-2. **Runtime stage**: `debian:bookworm-slim` with minimal OpenCV runtime libraries; includes the binary, `libonnxruntime.so` at `/usr/local/lib` (with `LD_LIBRARY_PATH` set), and the two dynamic ONNX models.
+1. **Builder stage**: `golang:1.27-trixie` (pure-Go, no OpenCV); downloads `libonnxruntime.so` (1.23.0, arch-aware via `TARGETARCH`); cross-compiles the Go binary for `TARGETARCH` (`go build ./cmd/face-api`).
+2. **Runtime stage**: `debian:bookworm-slim` with the minimal ONNX Runtime runtime libraries; includes the binary, `libonnxruntime.so` at `/usr/local/lib` (with `LD_LIBRARY_PATH` set), and the two dynamic ONNX models.
 
 ## ONNX Models & Inference
 
@@ -109,6 +132,7 @@ The ORT env is created with `ort.LoggingLevelError`, NOT `Warning`. On scaffolds
 - Uses `testcontainers-go` to build the image from the repo Dockerfile and spin up a container
 - Waits for HTTP GET /users on port 8081, then downloads Anthony Hopkins test images from GitHub
 - Tests enrollment (201), listing users, recognition (matched, name, similarity ≥ 0.45), missing-name (400), and no-face (400) cases
+- `/users` shape assertion: each user carries `pictures` (base64 JPEGs, up to 3) and a parseable RFC3339 `updated_at`; `TestEnrollMultiplePictures_E2E` additionally verifies 3 enrolls → 3 pictures via `/users` and the 4th enroll → 400
 - Also asserts: request-log JSON lines in container logs (via testcontainers `Logs(ctx)`), `/audit` returns newest-first entries with parseable RFC3339 times, no-face scans create **no** audit entries, `/healthz` and `/readyz` requests are **not** logged (while `/users` still is), and the container logs do **not** contain the ONNX `GPU device discovery failed` warning
 - Run with: `make test-e2e` or `go test -v -count=1 ./test/e2e/...`
 
@@ -116,6 +140,7 @@ The ORT env is created with `ort.LoggingLevelError`, NOT `Warning`. On scaffolds
 - Uses `testcontainers-go` to build the image and run it with **host networking** (`NetworkMode: "host"`)
 - Runs an **in-process gortsplib MJPEG-over-RTP mock server** (`test/rtsp/rtsp_mock_test.go`) on `127.0.0.1:18554`, so no external RTSP source or wifi camera is needed
 - The mock streams at 10 fps; frames are padded to a multiple-of-8 JPEG size (RTP/M-JPEG header constraint, `width/8`)
+- The `internal/server` unit suite additionally covers an **H.264 mock stream** (`TestReadRTSPFrameH264`): a real 160x120 SPS/PPS/IDR access unit extracted from govid's MIT testdata (fixture in `rtsp_h264_fixture_test.go`) is depacketized, decoded by govid, and returned as a full image
 - Tests: matched-face stream (status ok, name, similarity ≥ 0.45), config-fallback (request omits `rtsp_url`, uses `RTSP_URL` env), solid-color no-face stream (3s timeout → not ok), unreachable endpoint (not ok), and stream-check entries appearing in the audit log
 - Run with: `make test-rtsp` or `go test -v -count=1 ./test/rtsp/...`
 - `make test` runs both suites
@@ -153,7 +178,7 @@ Configurable via `REQUESTS` (default: 500) and `CONCURRENCY` (default: 10) envir
 - `faces.db` - bbolt database file, persisted via Docker volume mount
 - Bucket name: `"Faces"` (byte slice)
 - Key: user name (string)
-- Value: JSON array-of-arrays of float32 embeddings (legacy flat single-embedding values are migrated on startup)
+- Value: JSON `storedUser` object `{"embeddings":[[...],[...]],"pictures":["jpeg-b64",...],"updated_at":"RFC3339"}` (legacy flat/nested embedding-array values are migrated on load and backfilled from the audit log; see Request/Response Format)
 - Audit bucket name: `"Audit"` (byte slice); keys are `NextSequence()` big-endian uint64, values are JSON audit entries
 
 ## Code Structure
@@ -166,7 +191,13 @@ face-api/
 ├── internal/
 │   └── server/
 │       ├── face.go           # Blob building, SCRFD/ArcFace runs, detection/crop/embedding
-│       ├── server.go         # NewFaceServer, EnsureBucket, request logging + audit handlers
+│       ├── img.go            # Pure-Go image decode/resize/crop/blob helpers
+│       ├── rtsp.go           # MJPEG + H.264 (govid) RTSP frame capture
+│       ├── server.go         # NewFaceServer, EnsureBucket, hydrateCache/backfill, request logging + audit handlers
+│       ├── rtsp_test.go      # Mock RTSP server + single-frame read tests (MJPEG/H.264)
+│       ├── users_test.go     # storedUser migration, hydrateCache backfill, /users handler shape
+│       ├── ui_test.go        # UI render, PicoCSS serving, webcam markup, in-process proxy tests
+│       ├── templates/        # Embedded page templates + vendored pico.min.css
 │       └── types.go          # API response structs
 ├── models/                   # ONNX weights (downloaded by make download-model, gitignored)
 │   ├── scrfd_500m.onnx
@@ -225,9 +256,15 @@ face-api/
 - In Kubernetes the Helm chart mounts a PVC at `/data` and sets `FACES_DB_PATH=/data/faces.db`
 
 ### RTSP Stream Check
-- Connects to RTSP URL, samples frames every 100ms
+- Connects to the RTSP URL, decodes one frame (MJPEG via `decodeRGB`, or H.264 via the pure-Go `github.com/liqmix/govid/h264` decoder fed through gortsplib's `rtph264` depacketizer) and runs face detection/recognition on it
 - 3-second timeout for recognition
+- Stream-level errors are surfaced in `reason` when the message contains `codec` (e.g. an HEVC camera); generic connection failures use `"Failed to connect to RTSP stream"`
 - Returns first recognized face above threshold, or "not ok" with reason
+
+### H.264 Decoding Notes
+- gortsplib's `rtph264.Decoder` reassembles one access unit per `Decode` call and returns `[][]byte` NALUs (each **including** its 1-byte NAL header). govid, by contrast, expects **length-prefixed AVC** (4-byte big-endian lengths, `lengthSize=4`) — `readRTSPFrameH264` (`internal/server/rtsp.go`) bridges them by prefixing each NALU.
+- govid's `h264.Decoder` is stateful across `DecodePacket` calls (keeps SPS/PPS and reference frames), so transient errors on a mid-GOP join (e.g. `PPS 0 not found` before SPS/PPS arrive) are skipped and decoding continues until a full frame appears or the timeout fires.
+- Do not split the fixture with govid's `ParseNALUnits` when feeding gortsplib's encoder — it strips NAL headers (RBSP only); the tests use `splitAVC` to preserve them.
 
 ### Error Handling
 - Missing image field: 400 Bad Request
