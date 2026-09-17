@@ -1,10 +1,12 @@
 {{template "head" .}}
-<div class="container">
 <h1>Audit Log</h1>
-<p>Showing {{.Count}} entries (newest first) <span id="refreshHint" style="font-size:12px;color:var(--text-muted);">— auto-refreshes every 10s</span></p>
+<p>Showing {{.Count}} entries (newest first) <span id="refreshHint">— auto-refreshes every 10s</span></p>
 {{if .Entries}}
 <table>
+<thead>
 <tr><th>Time</th><th>Endpoint</th><th>Name</th><th>Similarity</th><th>Matched</th><th>Face</th></tr>
+</thead>
+<tbody>
 {{range .Entries}}
 <tr>
   <td>{{.Time.Format "2006-01-02 15:04:05"}}</td>
@@ -15,22 +17,21 @@
   <td>{{if .FaceImage}}<img class="face-thumb" src="data:image/jpeg;base64,{{.FaceImage}}">{{else}}-{{end}}</td>
 </tr>
 {{end}}
+</tbody>
 </table>
 {{else}}
 <p>No audit entries yet.</p>
 {{end}}
-</div>
 <script>
 (function() {
   setInterval(function() {
-    fetch('/ui/audit')
+    fetch('audit')
       .then(function(resp) { return resp.text(); })
       .then(function(html) {
-        var parser = new DOMParser();
-        var doc = parser.parseFromString(html, 'text/html');
+        var doc = new DOMParser().parseFromString(html, 'text/html');
         var newTable = doc.querySelector('table');
         var newHint = doc.querySelector('#refreshHint');
-        var newMsg = doc.querySelector('p');
+        var newMsg = doc.querySelector('.container > p');
         var table = document.querySelector('table');
         var hint = document.getElementById('refreshHint');
         var msg = document.querySelector('.container > p');
