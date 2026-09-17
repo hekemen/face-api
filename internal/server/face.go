@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"net/http"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -40,7 +41,7 @@ var detLevels = []detLevel{
 // bbolt store, and the two ONNX Runtime inference sessions.
 type FaceServer struct {
 	mu     sync.RWMutex
-	dbMap  map[string][][]float32 // In-memory cache: name -> face embeddings (up to 3)
+	dbMap  map[string]*storedUser // In-memory cache: name -> embeddings + pictures + updated_at
 	boltDB *bolt.DB               // Persistent bbolt datastore
 
 	log zerolog.Logger // structured application logger
@@ -55,6 +56,7 @@ type FaceServer struct {
 	threshold float32 // Match confidence threshold (~0.45)
 	rtspURL   string  // Default RTSP stream URL, used when the request omits rtsp_url
 	enableUI  bool    // Whether to serve the /ui web interface
+	mux       *http.ServeMux
 }
 
 // resizePadToSquare, matToNCHW, and encodeFaceToBase64 are implemented in
