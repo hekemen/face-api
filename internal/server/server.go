@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -49,10 +50,148 @@ func unmarshalEmbeddings(v []byte) ([][]float32, error) {
 	return nested, nil
 }
 
-// marshalEmbeddings serializes a list of face embeddings for storage.
-func marshalEmbeddings(embeddings [][]float32) []byte {
-	b, _ := json.Marshal(embeddings)
+// storedUser is the per-user value persisted in the Faces bucket. It holds the
+// enrolled embeddings plus, for users enrolled since the picture feature, the
+// cropped face images and the last-update timestamp. Legacy values (flat or
+// nested embedding arrays) are transparently upgraded to this shape.
+type storedUser struct {
+	Embeddings [][]float32 `json:"embeddings"`
+	Pictures   []string    `json:"pictures,omitempty"`
+	UpdatedAt  time.Time   `json:"updated_at,omitempty"`
+}
+
+// unmarshalUser parses a Faces bucket value into a storedUser, accepting both
+// the legacy embedding-array formats and the current object shape. A legacy
+// flat or nested array yields a storedUser with no pictures and a zero
+// UpdatedAt (the hydration backfill fills those in from the audit log).
+func unmarshalUser(v []byte) (*storedUser, error) {
+	if len(v) == 0 {
+		return nil, fmt.Errorf("empty user value")
+	}
+	if v[0] == '{' {
+		var u storedUser
+		if err := json.Unmarshal(v, &u); err != nil {
+			return nil, err
+		}
+		return &u, nil
+	}
+	embeddings, err := unmarshalEmbeddings(v)
+	if err != nil {
+		return nil, err
+	}
+	return &storedUser{Embeddings: embeddings}, nil
+}
+
+// marshalUser serializes a storedUser for the Faces bucket.
+func marshalUser(u *storedUser) []byte {
+	b, _ := json.Marshal(u)
 	return b
+}
+
+// hydrateCache loads the Faces bucket into the in-memory cache, upgrading
+// legacy embedding-array values to storedUser. Users stored in a legacy format
+// (or new-ish users without a persisted picture set) are then backfilled from
+// the audit log: their ENROLL entries carry the cropped face image and the
+// enrollment time, so we recover up to 3 pictures in enrollment order plus a
+// real updated_at. Users without any enroll audit rows get a hydration
+// timestamp so /users always reports a date. Non-enroll rows (recognize /
+// stream-check) never backfill pictures.
+func hydrateCache(db *bolt.DB) (map[string]*storedUser, error) {
+	cache := make(map[string]*storedUser)
+
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			u, err := unmarshalUser(v)
+			if err != nil {
+				return err
+			}
+			cache[string(k)] = u
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("hydrate cache: %w", err)
+	}
+
+	if err := backfillUsersFromAudit(db, cache); err != nil {
+		return nil, fmt.Errorf("backfill users from audit: %w", err)
+	}
+
+	now := time.Now()
+	for _, u := range cache {
+		if u.UpdatedAt.IsZero() {
+			u.UpdatedAt = now
+		}
+	}
+
+	return cache, nil
+}
+
+// backfillUsersFromAudit fills pictures and updated_at for users whose stored
+// value predates the picture feature (legacy embedding arrays, or an object
+// with no pictures). Pictures come from ENROLL audit rows only, up to 3 in
+// enrollment order; updated_at is the timestamp of the latest enroll row.
+func backfillUsersFromAudit(db *bolt.DB, cache map[string]*storedUser) error {
+	type enroll struct {
+		name string
+		img  string
+		time time.Time
+	}
+	enrolls := make([]enroll, 0)
+
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(auditBucketName)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var e AuditEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return nil
+			}
+			if e.Endpoint != "enroll" {
+				return nil
+			}
+			enrolls = append(enrolls, enroll{name: e.Name, img: e.FaceImage, time: e.Time})
+			return nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	for name, u := range cache {
+		if len(u.Pictures) > 0 {
+			continue
+		}
+		var pics []string
+		var latest time.Time
+		for _, e := range enrolls {
+			if e.name == name {
+				if e.img != "" {
+					pics = append(pics, e.img)
+					if len(pics) > 3 {
+						pics = pics[len(pics)-3:]
+					}
+				}
+				if e.time.After(latest) {
+					latest = e.time
+				}
+			}
+		}
+		if len(pics) > 0 {
+			u.Pictures = pics
+		}
+		if !latest.IsZero() {
+			u.UpdatedAt = latest
+		}
+	}
+
+	return nil
 }
 
 // storeAudit persists scan audit entries in a single bbolt transaction.
@@ -85,6 +224,9 @@ func (s *FaceServer) readAudit(limit int) ([]AuditEntry, error) {
 	res := make([]AuditEntry, 0, limit)
 	err := s.boltDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(auditBucketName)
+		if b == nil {
+			return nil
+		}
 		c := b.Cursor()
 		for k, v := c.Last(); k != nil && len(res) < limit; k, v = c.Prev() {
 			var e AuditEntry
@@ -103,21 +245,9 @@ func (s *FaceServer) readAudit(limit int) ([]AuditEntry, error) {
 // runtime, env, and sessions. rtspURL is the default RTSP stream URL used by
 // stream-check when the request does not provide one.
 func NewFaceServer(db *bolt.DB, log zerolog.Logger, rt *ort.Runtime, env *ort.Env, detSess, recSess *ort.Session, threshold float32, rtspURL string, enableUI bool) (*FaceServer, error) {
-	memoryCache := make(map[string][][]float32)
-
-	err := db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketName)
-		return b.ForEach(func(k, v []byte) error {
-			embeddings, err := unmarshalEmbeddings(v)
-			if err != nil {
-				return err
-			}
-			memoryCache[string(k)] = embeddings
-			return nil
-		})
-	})
+	memoryCache, err := hydrateCache(db)
 	if err != nil {
-		return nil, fmt.Errorf("hydrate cache: %w", err)
+		return nil, err
 	}
 
 	return &FaceServer{
@@ -136,6 +266,7 @@ func NewFaceServer(db *bolt.DB, log zerolog.Logger, rt *ort.Runtime, env *ort.En
 
 // RegisterHandlers attaches all FaceServer HTTP handlers to the given mux.
 func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
+	s.mux = mux
 	mux.HandleFunc("/enroll", s.handleEnroll)
 	mux.HandleFunc("/recognize", s.handleRecognize)
 	mux.HandleFunc("/stream-check", s.handleStreamCheck)
@@ -271,17 +402,29 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	existing := s.dbMap[name]
-	if len(existing) >= 3 {
+	if existing == nil {
+		existing = &storedUser{}
+	}
+	if len(existing.Embeddings) >= 3 {
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Maximum 3 pictures per user"})
 		return
 	}
-	updated := append(existing, embedding)
+	now := time.Now()
+	pictures := existing.Pictures
+	if faceImage != "" {
+		pictures = append(pictures, faceImage)
+	}
+	updated := &storedUser{
+		Embeddings: append(existing.Embeddings, embedding),
+		Pictures:   pictures,
+		UpdatedAt:  now,
+	}
 
 	err = s.boltDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
-		return b.Put([]byte(name), marshalEmbeddings(updated))
+		return b.Put([]byte(name), marshalUser(updated))
 	})
 	if err != nil {
 		s.mu.Unlock()
@@ -294,7 +437,7 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if err := s.storeAudit([]AuditEntry{{
-		Time:       time.Now(),
+		Time:       now,
 		Endpoint:   "enroll",
 		Name:       name,
 		Similarity: 1.0,
@@ -355,8 +498,8 @@ func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 	var bestMatch string
 	var maxScore float32 = -1.0
 
-	for name, knownVecs := range s.dbMap {
-		score := bestEmbeddingScore(queryVec, knownVecs)
+	for name, user := range s.dbMap {
+		score := bestEmbeddingScore(queryVec, user.Embeddings)
 		if score > maxScore {
 			maxScore = score
 			bestMatch = name
@@ -389,50 +532,40 @@ func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+// RunStreamCheck performs a single stream check: reads an RTSP frame,
+// detects a face, extracts an embedding, matches against enrolled users,
+// and stores an audit entry. It returns the result and any error.
+func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error) {
 	start := time.Now()
 
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(StreamCheckResponse{Status: "not ok", Reason: "Method not allowed"})
-		return
-	}
-
-	rtspURL := r.FormValue("rtsp_url")
 	if rtspURL == "" {
 		rtspURL = s.rtspURL
 	}
 	if rtspURL == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(StreamCheckResponse{Status: "not ok", Reason: "Missing 'rtsp_url' field"})
-		return
+		return StreamCheckResponse{
+			Status: "not ok",
+			Reason: "Missing RTSP URL",
+		}, fmt.Errorf("missing RTSP URL")
 	}
 
 	img, err := readRTSPFrame(rtspURL, 3*time.Second)
 	if err != nil {
-		w.WriteHeader(http.StatusOK)
-		// Surface codec/unsupported-stream reasons explicitly (e.g. an H.264
-		// camera); keep the generic connect-failure reason otherwise.
 		reason := "Failed to connect to RTSP stream"
-		if strings.Contains(err.Error(), "unsupported codec") {
+		if strings.Contains(err.Error(), "codec") {
 			reason = err.Error()
 		}
-		json.NewEncoder(w).Encode(StreamCheckResponse{
+		return StreamCheckResponse{
 			Status: "not ok",
 			Reason: reason,
-		})
-		return
+		}, err
 	}
 
 	cropped, _, err := s.detectAndCrop112(img)
 	if err != nil {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(StreamCheckResponse{
+		return StreamCheckResponse{
 			Status: "not ok",
 			Reason: "No face detected within 3 seconds",
-		})
-		return
+		}, nil
 	}
 
 	queryVec, err := s.extractEmbedding(cropped)
@@ -441,19 +574,17 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 		s.log.Error().Err(imgErr).Msg("failed to encode face image")
 	}
 	if err != nil {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(StreamCheckResponse{
+		return StreamCheckResponse{
 			Status: "not ok",
 			Reason: "No face detected within 3 seconds",
-		})
-		return
+		}, nil
 	}
 
 	s.mu.RLock()
 	var bestMatch string
 	var highestScore float32 = -1.0
-	for name, knownVecs := range s.dbMap {
-		score := bestEmbeddingScore(queryVec, knownVecs)
+	for name, user := range s.dbMap {
+		score := bestEmbeddingScore(queryVec, user.Embeddings)
 		if score > highestScore {
 			highestScore = score
 			bestMatch = name
@@ -472,43 +603,81 @@ func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 		DurationMs: dur.DurationMs,
 		FaceImage:  faceImage,
 	}
+	if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
+		s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
+	}
+
 	if highestScore >= s.threshold {
-		if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
-			s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
-		}
-		json.NewEncoder(w).Encode(StreamCheckResponse{
+		return StreamCheckResponse{
 			OperationDuration: dur,
 			Status:            "ok",
 			Name:              bestMatch,
 			Similarity:        highestScore,
-		})
+			Matched:           true,
+		}, nil
+	}
+
+	return StreamCheckResponse{
+		OperationDuration: dur,
+		Status:            "not ok",
+		Reason:            "No face detected within 3 seconds",
+		Similarity:        highestScore,
+		Matched:           false,
+	}, nil
+}
+
+func (s *FaceServer) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(StreamCheckResponse{Status: "not ok", Reason: "Method not allowed"})
 		return
 	}
 
-	if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
-		s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
+	rtspURL := r.FormValue("rtsp_url")
+	if rtspURL == "" {
+		rtspURL = s.rtspURL
 	}
-	reason := "No face detected within 3 seconds"
-	json.NewEncoder(w).Encode(StreamCheckResponse{
-		OperationDuration: dur,
-		Status:            "not ok",
-		Reason:            reason,
-		Similarity:        highestScore,
-	})
+	if rtspURL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(StreamCheckResponse{Status: "not ok", Reason: "Missing 'rtsp_url' field"})
+		return
+	}
+
+	result, err := s.RunStreamCheck(rtspURL)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+	json.NewEncoder(w).Encode(result)
 }
 
 func (s *FaceServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
 
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	users := make([]string, 0, len(s.dbMap))
+	users := make([]UserInfo, 0, len(s.dbMap))
+	names := make([]string, 0, len(s.dbMap))
 	for name := range s.dbMap {
-		users = append(users, name)
+		names = append(names, name)
 	}
+	sort.Strings(names)
+	for _, name := range names {
+		u := s.dbMap[name]
+		users = append(users, UserInfo{
+			Name:      name,
+			Pictures:  u.Pictures,
+			UpdatedAt: u.UpdatedAt,
+		})
+	}
+	s.mu.RUnlock()
 
-	json.NewEncoder(w).Encode(map[string][]string{"users": users})
+	json.NewEncoder(w).Encode(UsersListResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Users:             users,
+	})
 }
 
 // handleListAudit returns the latest audit entries (face scans), newest first.

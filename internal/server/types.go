@@ -22,6 +22,7 @@ type StreamCheckResponse struct {
 	Name       string  `json:"name,omitempty"`
 	Similarity float32 `json:"similarity,omitempty"`
 	Reason     string  `json:"reason,omitempty"`
+	Matched    bool    `json:"matched,omitempty"`
 }
 
 // EnrolledResponse is returned by the enroll endpoint on success.
@@ -47,4 +48,18 @@ type AuditListResponse struct {
 	OperationDuration
 	Count   int          `json:"count"`
 	Entries []AuditEntry `json:"entries"`
+}
+
+// UserInfo describes one enrolled user in the GET /users response: name plus
+// the enrolled face pictures (up to 3) and the last-update timestamp.
+type UserInfo struct {
+	Name      string    `json:"name"`
+	Pictures  []string  `json:"pictures,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// UsersListResponse is returned by the GET /users endpoint.
+type UsersListResponse struct {
+	OperationDuration
+	Users []UserInfo `json:"users"`
 }
