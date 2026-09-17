@@ -16,7 +16,7 @@ import (
 
 // CheckFunc is the stream-check function that the Bridge calls when
 // a trigger message arrives. It returns the result of the check.
-type CheckFunc func() (server.StreamCheckResponse, error)
+type CheckFunc func(rtspURL string) (server.StreamCheckResponse, error)
 
 // Config holds MQTT configuration.
 type Config struct {
@@ -199,7 +199,7 @@ func (b *Bridge) worker() {
 		case <-b.done:
 			return
 		case <-b.queue:
-			result, err := b.check()
+			result, err := b.check("")
 			if err != nil {
 				result = server.StreamCheckResponse{
 					Status: "not ok",
@@ -266,15 +266,15 @@ func (b *Bridge) publishDiscovery(c mqtt.Client) {
 
 	// Button: check.
 	buttonConfig := map[string]any{
-		"name":              "Check",
-		"unique_id":         "face_api_check",
-		"command_topic":     b.cfg.BaseTopic + "/trigger",
-		"payload_press":     "on",
-		"device":            device,
-		"availability_topic": availTopic,
-		"payload_available": "online",
+		"name":                  "Check",
+		"unique_id":             "face_api_check",
+		"command_topic":         b.cfg.BaseTopic + "/trigger",
+		"payload_press":         "on",
+		"device":                device,
+		"availability_topic":    availTopic,
+		"payload_available":     "online",
 		"payload_not_available": "offline",
-		"availability_mode": availMode,
+		"availability_mode":     availMode,
 	}
 	c.Publish(b.discoveryTopic("button", "face_api_check"), 1, true, mustJSON(buttonConfig))
 }

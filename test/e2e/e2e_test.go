@@ -179,21 +179,36 @@ func TestEnrollAndRecognize_E2E(t *testing.T) {
 		t.Fatalf("users request failed: %v", err)
 	}
 	defer usersResp.Body.Close()
-	var usersRespBody map[string][]string
+	type e2eUser struct {
+		Name      string   `json:"name"`
+		Pictures  []string `json:"pictures"`
+		UpdatedAt string   `json:"updated_at"`
+	}
+	var usersRespBody struct {
+		Users []e2eUser `json:"users"`
+	}
 	if err := json.NewDecoder(usersResp.Body).Decode(&usersRespBody); err != nil {
 		t.Fatalf("failed to decode users response: %v", err)
 	}
-	found := false
-	for _, u := range usersRespBody["users"] {
-		if u == "anthony" {
-			found = true
-			break
+	var anthony *e2eUser
+	for i := range usersRespBody.Users {
+		if usersRespBody.Users[i].Name == "anthony" {
+			anthony = &usersRespBody.Users[i]
 		}
 	}
-	if !found {
-		t.Fatalf("expected 'anthony' in users list, got: %v", usersRespBody["users"])
+	if anthony == nil {
+		t.Fatalf("expected 'anthony' in users list, got: %v", usersRespBody.Users)
 	}
-	t.Logf("Users: %v", usersRespBody["users"])
+	if len(anthony.Pictures) == 0 {
+		t.Fatalf("expected 'anthony' to have at least one enrolled picture, got %d", len(anthony.Pictures))
+	}
+	if anthony.UpdatedAt == "" {
+		t.Fatal("expected 'anthony' to have an updated_at timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, anthony.UpdatedAt); err != nil {
+		t.Fatalf("updated_at is not RFC3339: %q", anthony.UpdatedAt)
+	}
+	t.Logf("Users: %+v", usersRespBody.Users)
 
 	t.Log("=== Step 3: Recognizing Anthony Hopkins with image 2 ===")
 	recognizeBuf, recognizeContentType := multipartBody("image", "test_hopkins_2.jpg")
@@ -255,6 +270,30 @@ func TestEnrollMultiplePictures_E2E(t *testing.T) {
 	t.Log("=== Step 4: Fourth enroll must be rejected (max 3) ===")
 	if code := enrollTo(baseURL, "multi", "test_hopkins_2.jpg"); code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for 4th picture, got %d", code)
+	}
+
+	t.Log("=== Step 4b: /users reports all 3 pictures for 'multi' ===")
+	usersResp2, err := http.Get(baseURL + "/users")
+	if err != nil {
+		t.Fatalf("users request failed: %v", err)
+	}
+	defer usersResp2.Body.Close()
+	var usersResp2Body struct {
+		Users []struct {
+			Name     string   `json:"name"`
+			Pictures []string `json:"pictures"`
+		} `json:"users"`
+	}
+	if err := json.NewDecoder(usersResp2.Body).Decode(&usersResp2Body); err != nil {
+		t.Fatalf("decode users response: %v", err)
+	}
+	for _, u := range usersResp2Body.Users {
+		if u.Name == "multi" {
+			if len(u.Pictures) != 3 {
+				t.Fatalf("expected 'multi' to have 3 pictures via /users, got %d", len(u.Pictures))
+			}
+			break
+		}
 	}
 
 	t.Log("=== Step 5: Recognizing with image 2 (multi now has 3 embeddings) ===")

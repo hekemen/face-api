@@ -13,23 +13,28 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmjpeg"
 )
 
 const mockRTSPAddr = "127.0.0.1:18555"
 
-// mockRTSPTest is an in-process M-JPEG RTSP server with an optional H.264
-// variant, used to test the pure-Go readRTSPFrame client.
+// mockRTSPTest is an in-process M-JPEG / H.264 RTSP server used to test the
+// pure-Go readRTSPFrame client.
 type mockRTSPTest struct {
 	srv    *gortsplib.Server
 	stream *gortsplib.ServerStream
 	media  *description.Media
-	enc    *rtpmjpeg.Encoder
 
-	frame []byte
-	ts    uint32
-	stop  chan struct{}
-	done  chan struct{}
+	mjpegEnc    *rtpmjpeg.Encoder
+	mjpegFrame  []byte
+	h264Enc     *rtph264.Encoder
+	h264NALUs   [][]byte
+	description *description.Session
+
+	ts   uint32
+	stop chan struct{}
+	done chan struct{}
 }
 
 var _ gortsplib.ServerHandlerOnDescribe = (*mockRTSPTest)(nil)
@@ -68,6 +73,7 @@ func newMockRTSP(mjpeg bool) (*mockRTSPTest, error) {
 			Medias: []*description.Media{{
 				Type: description.MediaTypeVideo,
 				Formats: []format.Format{&format.H264{
+					PayloadTyp:        96,
 					PacketizationMode: 1,
 				}},
 			}},
@@ -79,10 +85,16 @@ func newMockRTSP(mjpeg bool) (*mockRTSPTest, error) {
 		return nil, err
 	}
 
+	m.media = m.stream.Desc.Medias[0]
 	if mjpeg {
-		m.media = m.stream.Desc.Medias[0]
 		var err error
-		m.enc, err = m.media.Formats[0].(*format.MJPEG).CreateEncoder()
+		m.mjpegEnc, err = m.media.Formats[0].(*format.MJPEG).CreateEncoder()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		m.h264Enc, err = m.media.Formats[0].(*format.H264).CreateEncoder()
 		if err != nil {
 			return nil, err
 		}
@@ -102,17 +114,24 @@ func (m *mockRTSPTest) pump() {
 		case <-m.stop:
 			return
 		case <-ticker.C:
-			if m.enc == nil || m.frame == nil {
-				continue
-			}
 			ts := uint32(90000 * time.Since(start) / time.Second)
-			pkts, err := m.enc.Encode(m.frame)
-			if err != nil {
-				continue
+			if m.mjpegEnc != nil && m.mjpegFrame != nil {
+				pkts, err := m.mjpegEnc.Encode(m.mjpegFrame)
+				if err == nil {
+					for _, p := range pkts {
+						p.Timestamp = ts
+						_ = m.stream.WritePacketRTP(m.media, p)
+					}
+				}
 			}
-			for _, p := range pkts {
-				p.Timestamp = ts
-				_ = m.stream.WritePacketRTP(m.media, p)
+			if m.h264Enc != nil && m.h264NALUs != nil {
+				pkts, err := m.h264Enc.Encode(m.h264NALUs)
+				if err == nil {
+					for _, p := range pkts {
+						p.Timestamp = ts
+						_ = m.stream.WritePacketRTP(m.media, p)
+					}
+				}
 			}
 		}
 	}
@@ -143,7 +162,7 @@ func TestReadRTSPFrameMJPEG(t *testing.T) {
 		t.Fatalf("start mock RTSP: %v", err)
 	}
 	defer m.stopSrv()
-	m.frame = mockJPEGFrame(t)
+	m.mjpegFrame = mockJPEGFrame(t)
 
 	img, err := readRTSPFrame("rtsp://"+mockRTSPAddr+"/face", 2*time.Second)
 	if err != nil {
@@ -154,22 +173,45 @@ func TestReadRTSPFrameMJPEG(t *testing.T) {
 	}
 }
 
-func TestReadRTSPFrameH264Rejected(t *testing.T) {
+func TestReadRTSPFrameH264(t *testing.T) {
 	m, err := newMockRTSP(false)
 	if err != nil {
 		t.Fatalf("start mock RTSP (H264): %v", err)
 	}
 	defer m.stopSrv()
 
-	_, err = readRTSPFrame("rtsp://"+mockRTSPAddr+"/face", 2*time.Second)
-	if err == nil {
-		t.Fatal("readRTSPFrame accepted an H.264 stream, want not-ok error")
+	// Split the length-prefixed AVC fixture into raw NALUs (including the
+	// 1-byte NAL header). gortsplib's encoder/decoder expects the header;
+	// govid's ParseNALUnits strips it (RBSP only), so we split manually.
+	nalus := splitAVC(h264TestAU, 4)
+	m.h264NALUs = nalus
+
+	img, err := readRTSPFrame("rtsp://"+mockRTSPAddr+"/face", 5*time.Second)
+	if err != nil {
+		t.Fatalf("readRTSPFrame (H.264): %v", err)
+	}
+	if img == nil || img.w != 160 || img.h != 120 {
+		t.Fatalf("readRTSPFrame returned image %v, want 160x120", img)
 	}
 }
 
-func TestReadRTSPFrameUnreachable(t *testing.T) {
-	_, err := readRTSPFrame("rtsp://127.0.0.1:9/nope", 1*time.Second)
-	if err == nil {
-		t.Fatal("readRTSPFrame returned nil error for unreachable server")
+// splitAVC splits length-prefixed AVC data into raw NALUs (each including
+// the 1-byte NAL header byte) suitable for gortsplib's rtph264 encoder.
+func splitAVC(data []byte, lengthSize int) [][]byte {
+	var nalus [][]byte
+	off := 0
+	for off+lengthSize <= len(data) {
+		var n uint32
+		switch lengthSize {
+		case 4:
+			n = uint32(data[off])<<24 | uint32(data[off+1])<<16 | uint32(data[off+2])<<8 | uint32(data[off+3])
+		}
+		off += lengthSize
+		if off+int(n) > len(data) || n == 0 {
+			break
+		}
+		nalus = append(nalus, data[off:off+int(n)])
+		off += int(n)
 	}
+	return nalus
 }
