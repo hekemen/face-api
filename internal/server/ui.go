@@ -266,18 +266,11 @@ func (s *FaceServer) handleUIAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *FaceServer) handleUIStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet && r.URL.RawQuery == "" {
-		s.renderTemplate(w, "stats.html", UIPage{})
-		return
+	// Always fetch stats from the API for the initial page render.
+	result, _ := s.proxyAPI(w, r, "/stats")
+	var resp StatsResponse
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		resp = StatsResponse{}
 	}
-
-	result, class := s.proxyAPI(w, r, "/stats")
-	page := UIPage{Result: result, Class: class}
-	if class == "" {
-		var resp StatsResponse
-		if err := json.Unmarshal([]byte(result), &resp); err == nil {
-			page.Stats = &resp
-		}
-	}
-	s.renderTemplate(w, "stats.html", page)
+	s.renderTemplate(w, "stats.html", UIPage{Stats: &resp})
 }
