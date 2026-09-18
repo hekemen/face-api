@@ -1,51 +1,142 @@
 {{template "head" .}}
 {{template "subpageHeader" .}}
 <a href="./" class="back-link">← Dashboard</a>
-<p>Showing {{.Count}} entries (newest first) <span id="refreshHint">— auto-refreshes every 10s</span></p>
-{{if .Entries}}
-<table>
-<thead>
-<tr><th>Time</th><th>Endpoint</th><th>Name</th><th>Similarity</th><th>Matched</th><th>Face</th></tr>
-</thead>
-<tbody>
-{{range .Entries}}
-<tr>
-  <td>{{.Time.Format "2006-01-02 15:04:05"}}</td>
-  <td>{{.Endpoint}}</td>
-  <td>{{.Name}}</td>
-  <td>{{printf "%.3f" .Similarity}}</td>
-  <td>{{if .Matched}}Yes{{else}}No{{end}}</td>
-  <td>{{if .FaceImage}}<img class="face-thumb" src="data:image/jpeg;base64,{{.FaceImage}}">{{else}}-{{end}}</td>
-</tr>
-{{end}}
-</tbody>
-</table>
-{{else}}
-<p>No audit entries yet.</p>
-{{end}}
+
+<div id="auditFilters" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;align-items:center;">
+  <input type="text" id="filterName" placeholder="Filter by name..." style="flex:1;min-width:120px;padding:0.4rem 0.6rem;" />
+  <select id="filterEndpoint" style="padding:0.4rem 0.6rem;">
+    <option value="">All endpoints</option>
+    <option value="enroll">enroll</option>
+    <option value="recognize">recognize</option>
+    <option value="stream-check">stream-check</option>
+  </select>
+  <select id="filterMatched" style="padding:0.4rem 0.6rem;">
+    <option value="">All</option>
+    <option value="yes">Matched</option>
+    <option value="no">Not matched</option>
+  </select>
+  <button id="applyFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Apply</button>
+  <button id="clearFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Clear</button>
+</div>
+
+<p id="auditInfo">Loading...</p>
+
+<div id="auditContent"></div>
+
+<nav id="pagination" style="display:flex;justify-content:center;gap:0.25rem;margin:1rem 0;flex-wrap:wrap;"></nav>
+
 <script>
 (function() {
-  setInterval(function() {
-    fetch('audit')
-      .then(function(resp) { return resp.text(); })
-      .then(function(html) {
-        var doc = new DOMParser().parseFromString(html, 'text/html');
-        var newTable = doc.querySelector('table');
-        var newHint = doc.querySelector('#refreshHint');
-        var newMsg = doc.querySelector('.container > p');
-        var table = document.querySelector('table');
-        var hint = document.getElementById('refreshHint');
-        var msg = document.querySelector('.container > p');
-        if (newTable && table) {
-          table.innerHTML = newTable.innerHTML;
-        } else if (newHint && hint) {
-          hint.outerHTML = newHint.outerHTML;
-        } else if (newMsg && msg && !table) {
-          msg.innerHTML = newMsg.innerHTML;
-        }
-      })
-      .catch(function(err) { console.error('Audit refresh failed:', err); });
-  }, 10000);
+  'use strict';
+  var state = { page: 1, perPage: 20, name: '', endpoint: '', matched: '' };
+
+  function buildURL() {
+    var u = '/api/audit?page=' + state.page + '&per_page=' + state.perPage;
+    if (state.name) u += '&name=' + encodeURIComponent(state.name);
+    if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
+    if (state.matched) u += '&matched=' + encodeURIComponent(state.matched);
+    return u;
+  }
+
+  function renderAudit(data) {
+    var info = document.getElementById('auditInfo');
+    var content = document.getElementById('auditContent');
+    if (!data || data.entries.length === 0) {
+      info.textContent = 'No audit entries found.';
+      content.innerHTML = '';
+      document.getElementById('pagination').innerHTML = '';
+      return;
+    }
+
+    var totalPages = data.total_pages;
+    info.textContent = 'Showing ' + data.entries.length + ' of ' + data.total_count + ' entries (page ' + state.page + ' of ' + totalPages + ')';
+
+    var html = '<table><thead><tr><th>Time</th><th>Endpoint</th><th>Name</th><th>Similarity</th><th>Matched</th><th>Face</th></tr></thead><tbody>';
+    data.entries.forEach(function(e) {
+      html += '<tr>';
+      html += '<td>' + new Date(e.time).toLocaleString() + '</td>';
+      html += '<td>' + e.endpoint + '</td>';
+      html += '<td>' + (e.name || '-') + '</td>';
+      html += '<td>' + e.similarity.toFixed(3) + '</td>';
+      html += '<td>' + (e.matched ? 'Yes' : 'No') + '</td>';
+      html += '<td>' + (e.face_image ? '<img class="face-thumb" src="data:image/jpeg;base64,' + e.face_image + '">' : '-') + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    content.innerHTML = html;
+    renderPagination(data.total_pages);
+  }
+
+  function renderPagination(totalPages) {
+    var nav = document.getElementById('pagination');
+    if (totalPages <= 1) { nav.innerHTML = ''; return; }
+
+    var html = '';
+    if (state.page > 1) {
+      html += '<button class="page-btn" data-page="' + (state.page - 1) + '">← Prev</button>';
+    }
+    // Show up to 5 page buttons centered around current
+    var start = Math.max(1, state.page - 2);
+    var end = Math.min(totalPages, start + 4);
+    if (end - start < 4) start = Math.max(1, end - 4);
+    for (var i = start; i <= end; i++) {
+      html += '<button class="page-btn' + (i === state.page ? ' active' : '') + '" data-page="' + i + '">' + i + '</button>';
+    }
+    if (state.page < totalPages) {
+      html += '<button class="page-btn" data-page="' + (state.page + 1) + '">Next →</button>';
+    }
+    nav.innerHTML = html;
+  }
+
+  function loadAudit() {
+    fetch(buildURL())
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) { renderAudit(data); })
+      .catch(function(err) { console.error('Audit load failed:', err); });
+  }
+
+  // Event listeners
+  document.getElementById('applyFilters').addEventListener('click', function() {
+    state.page = 1;
+    state.name = document.getElementById('filterName').value;
+    state.endpoint = document.getElementById('filterEndpoint').value;
+    state.matched = document.getElementById('filterMatched').value;
+    loadAudit();
+  });
+
+  document.getElementById('clearFilters').addEventListener('click', function() {
+    document.getElementById('filterName').value = '';
+    document.getElementById('filterEndpoint').value = '';
+    document.getElementById('filterMatched').value = '';
+    state.page = 1;
+    state.name = '';
+    state.endpoint = '';
+    state.matched = '';
+    loadAudit();
+  });
+
+  document.getElementById('pagination').addEventListener('click', function(e) {
+    var btn = e.target.closest('.page-btn');
+    if (!btn) return;
+    var p = parseInt(btn.getAttribute('data-page'), 10);
+    if (p >= 1) {
+      state.page = p;
+      loadAudit();
+    }
+  });
+
+  // Enter key on name filter
+  document.getElementById('filterName').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      document.getElementById('applyFilters').click();
+    }
+  });
+
+  // Auto-refresh every 30s (respects current filters/page)
+  setInterval(loadAudit, 30000);
+
+  // Initial load
+  loadAudit();
 })();
 </script>
 {{template "foot" .}}
