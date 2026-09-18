@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -240,6 +241,72 @@ func (s *FaceServer) readAudit(limit int) ([]AuditEntry, error) {
 	return res, err
 }
 
+// readAuditPaginated returns a page of audit entries with filtering support.
+// nameFilter: substring match on name (case-insensitive).
+// endpointFilter: exact match on endpoint.
+// matchedFilter: "yes"=matched only, "no"=not matched only, ""=all.
+// page: 1-based page number. perPage: entries per page.
+// Returns (entries, totalCount, error).
+func (s *FaceServer) readAuditPaginated(nameFilter, endpointFilter, matchedFilter string, page, perPage int) ([]AuditEntry, int, error) {
+	if perPage <= 0 {
+		perPage = 20
+	}
+	if page <= 0 {
+		page = 1
+	}
+
+	var all []AuditEntry
+	err := s.boltDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(auditBucketName)
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			var e AuditEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				continue
+			}
+			all = append(all, e)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Apply filters.
+	filtered := make([]AuditEntry, 0, len(all))
+	for _, e := range all {
+		if nameFilter != "" && !strings.Contains(strings.ToLower(e.Name), strings.ToLower(nameFilter)) {
+			continue
+		}
+		if endpointFilter != "" && e.Endpoint != endpointFilter {
+			continue
+		}
+		if matchedFilter == "yes" && !e.Matched {
+			continue
+		}
+		if matchedFilter == "no" && e.Matched {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	totalCount := len(filtered)
+
+	// Paginate (entries are already newest-first).
+	start := (page - 1) * perPage
+	if start >= totalCount {
+		return nil, totalCount, nil
+	}
+	end := start + perPage
+	if end > totalCount {
+		end = totalCount
+	}
+	return filtered[start:end], totalCount, nil
+}
+
 // NewFaceServer creates a FaceServer with the given bbolt database, logger,
 // and ONNX Runtime sessions. The caller is responsible for closing the
 // runtime, env, and sessions. rtspURL is the default RTSP stream URL used by
@@ -273,6 +340,7 @@ func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/users", s.handleListUsers)
 	mux.HandleFunc("/users/", s.handleDeleteUser)
 	mux.HandleFunc("/audit", s.handleListAudit)
+	mux.HandleFunc("/api/audit", s.handleListAuditPaginated)
 	mux.HandleFunc("/stats", s.handleListStats)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
@@ -698,6 +766,64 @@ func (s *FaceServer) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
 		Count:             len(entries),
 		Entries:           entries,
+	})
+}
+
+// AuditPaginatedResponse is returned by the GET /api/audit endpoint.
+type AuditPaginatedResponse struct {
+	OperationDuration `json:",inline"`
+	Entries           []AuditEntry `json:"entries"`
+	TotalCount        int          `json:"total_count"`
+	Page              int          `json:"page"`
+	PerPage           int          `json:"per_page"`
+	TotalPages        int          `json:"total_pages"`
+}
+
+// handleListAuditPaginated returns paginated, filterable audit entries as JSON.
+// Query params: name, endpoint, matched, page, per_page.
+func (s *FaceServer) handleListAuditPaginated(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
+
+	nameFilter := r.URL.Query().Get("name")
+	endpointFilter := r.URL.Query().Get("endpoint")
+	matchedFilter := r.URL.Query().Get("matched")
+	page := 1
+	perPage := 20
+
+	if p := r.URL.Query().Get("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n >= 1 {
+			page = n
+		}
+	}
+	if pp := r.URL.Query().Get("per_page"); pp != "" {
+		if n, err := strconv.Atoi(pp); err == nil && n >= 1 {
+			perPage = n
+		}
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	entries, totalCount, err := s.readAuditPaginated(nameFilter, endpointFilter, matchedFilter, page, perPage)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read audit log"})
+		return
+	}
+
+	totalPages := (totalCount + perPage - 1) / perPage
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
+	json.NewEncoder(w).Encode(AuditPaginatedResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Entries:           entries,
+		TotalCount:        totalCount,
+		Page:              page,
+		PerPage:           perPage,
+		TotalPages:        totalPages,
 	})
 }
 
