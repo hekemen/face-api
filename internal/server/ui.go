@@ -30,6 +30,8 @@ type UIPage struct {
 	DashUsers    []UserInfo
 	DashStats    *StatsResponse
 	DashAudit    []AuditEntry
+	GitVersion   string
+	GitHubURL    string
 }
 
 // RegisterUIHandlers attaches the /ui web interface handlers to the given mux.
@@ -48,7 +50,10 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if path == "" {
-		page := UIPage{}
+		page := UIPage{
+			GitVersion:  "v0.0.8",
+			GitHubURL:   "https://github.com/hekemen/face-api",
+		}
 
 		// Fetch users for dashboard.
 		s.mu.RLock()
