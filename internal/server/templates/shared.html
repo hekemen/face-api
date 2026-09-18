@@ -9,7 +9,7 @@
 /* Small overrides on top of Pico — keep the existing custom UI conventions. */
 body > nav[role="navigation"] { background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); position: sticky; top: 0; z-index: 100; padding: 0.75rem 1rem; }
 body > nav[role="navigation"] ul { margin: 0; flex-wrap: wrap; gap: 0.25rem; }
-body > main.container { max-width: 960px; }
+body > main.container { max-width: 960px; padding: 1.5rem 1rem; }
 img.face-thumb { width: 64px; height: 64px; object-fit: cover; vertical-align: middle; border-radius: 6px; border: 1px solid var(--pico-muted-border-color); }
 img.face-preview, .preview-container img { max-width: 300px; max-height: 300px; border-radius: 8px; display: block; margin: 0 auto; box-shadow: var(--pico-card-box-shadow); }
 .preview-container { margin-top: 1rem; text-align: center; }
@@ -46,6 +46,8 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 .dash-card-data .entry-not-matched { color: var(--pico-error); }
 .dash-card-data .stat-big { font-size: 1.8rem; font-weight: 700; color: var(--pico-primary); }
 .dash-card-data .stat-label { color: var(--pico-muted-color); font-size: 0.8rem; }
+.back-link { display: inline-block; margin-bottom: 1rem; color: var(--pico-primary); text-decoration: none; font-size: 0.9rem; }
+.back-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
