@@ -22,7 +22,12 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 @media (max-width: 600px) {
   img.face-thumb { width: 48px; height: 48px; }
 }
-/* Dashboard card grid */
+/* Header bar */
+.header { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); }
+.header h1 { margin: 0; font-size: 1.2rem; }
+.header-stats { display: flex; gap: 1.5rem; font-size: 0.85rem; }
+.header-stats .stat-big { font-size: 1.3rem; font-weight: 700; color: var(--pico-primary); }
+.header-stats .stat-label { color: var(--pico-muted-color); font-size: 0.75rem; }
 .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin: 1rem 0; }
 .dash-card { display: block; background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s; }
 .dash-card:hover { border-color: var(--pico-primary); }
@@ -44,12 +49,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 </style>
 </head>
 <body>
-<nav role="navigation">
-  <ul>
-    <li><strong>Face API</strong></li>
-  </ul>
-</nav>
-<main class="container">{{end}}
+{{end}}
 
 {{define "camera"}}<script>
 (function() {
