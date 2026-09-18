@@ -56,8 +56,6 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		s.handleUIRecognize(w, r)
 	case "stream-check":
 		s.handleUIStreamCheck(w, r)
-	case "users":
-		s.handleUIUsers(w, r)
 	case "audit":
 		s.handleUIAudit(w, r)
 	case "stats":
@@ -232,27 +230,6 @@ func (s *FaceServer) handleUIStreamCheck(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	s.renderTemplate(w, "stream-check.html", page)
-}
-
-func (s *FaceServer) handleUIUsers(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	users := make([]UserInfo, 0, len(s.dbMap))
-	names := make([]string, 0, len(s.dbMap))
-	for name := range s.dbMap {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		u := s.dbMap[name]
-		users = append(users, UserInfo{
-			Name:      name,
-			Pictures:  u.Pictures,
-			UpdatedAt: u.UpdatedAt,
-		})
-	}
-	s.mu.RUnlock()
-
-	s.renderTemplate(w, "users.html", UIPage{Users: users})
 }
 
 func (s *FaceServer) handleUIAudit(w http.ResponseWriter, r *http.Request) {
