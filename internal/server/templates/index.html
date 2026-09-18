@@ -1,25 +1,4 @@
 {{template "head" .}}
-<div class="header">
-  <h1>Face API</h1>
-  <div class="header-stats">
-    {{if .DashStats}}
-    <div>
-      <div class="stat-big">{{.DashStats.TotalChecks}}</div>
-      <div class="stat-label">checks</div>
-    </div>
-    <div>
-      <div class="stat-big">{{.DashStats.TotalMatched}}</div>
-      <div class="stat-label">matched</div>
-    </div>
-    {{end}}
-    {{if .DashUsers}}
-    <div>
-      <div class="stat-big">{{len .DashUsers}}</div>
-      <div class="stat-label">users</div>
-    </div>
-    {{end}}
-  </div>
-</div>
 <main class="container">
 <div class="dashboard">
   <!-- Enroll Face -->

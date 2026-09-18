@@ -1,4 +1,5 @@
 {{template "head" .}}
+{{template "subpageHeader" .}}
 <a href="./" class="back-link">← Dashboard</a>
 <form method="POST" action="enroll" enctype="multipart/form-data" id="enrollForm">
   <label for="name">Name:</label>
@@ -64,3 +65,4 @@
 {{end}}
 
 {{template "foot" .}}
+{{template "clockScript" .}}

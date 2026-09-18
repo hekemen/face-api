@@ -1,4 +1,5 @@
 {{template "head" .}}
+{{template "subpageHeader" .}}
 <a href="./" class="back-link">← Dashboard</a>
 <form method="POST" action="stream-check" enctype="multipart/form-data">
   <label for="rtsp_url">RTSP URL (optional):</label>
@@ -9,3 +10,4 @@
 <div class="result {{.Class}}">{{.Result}}</div>
 {{end}}
 {{template "foot" .}}
+{{template "clockScript" .}}

@@ -9,7 +9,8 @@
 /* Small overrides on top of Pico — keep the existing custom UI conventions. */
 body > nav[role="navigation"] { background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); position: sticky; top: 0; z-index: 100; padding: 0.75rem 1rem; }
 body > nav[role="navigation"] ul { margin: 0; flex-wrap: wrap; gap: 0.25rem; }
-body > main.container { max-width: 960px; padding: 1.5rem 1rem; }
+body > main.container { max-width: 960px; }
+body > main.container.has-header { max-width: 960px; padding: 1.5rem 1rem; }
 img.face-thumb { width: 64px; height: 64px; object-fit: cover; vertical-align: middle; border-radius: 6px; border: 1px solid var(--pico-muted-border-color); }
 img.face-preview, .preview-container img { max-width: 300px; max-height: 300px; border-radius: 8px; display: block; margin: 0 auto; box-shadow: var(--pico-card-box-shadow); }
 .preview-container { margin-top: 1rem; text-align: center; }
@@ -24,10 +25,13 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 }
 /* Header bar */
 .header { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); }
-.header h1 { margin: 0; font-size: 1.2rem; }
-.header-stats { display: flex; gap: 1.5rem; font-size: 0.85rem; }
-.header-stats .stat-big { font-size: 1.3rem; font-weight: 700; color: var(--pico-primary); }
-.header-stats .stat-label { color: var(--pico-muted-color); font-size: 0.75rem; }
+.header-left { display: flex; align-items: center; gap: 1rem; }
+.header-clock { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.header-clock .date { font-size: 0.8rem; color: var(--pico-muted-color); font-weight: 400; }
+.header-controls { display: flex; align-items: center; gap: 0.75rem; }
+.theme-toggle, .auto-toggle { background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: inherit; transition: border-color 0.2s; }
+.theme-toggle:hover, .auto-toggle:hover { border-color: var(--pico-primary); }
+.auto-toggle.active { background: var(--pico-primary); color: #fff; border-color: var(--pico-primary); }
 .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin: 1rem 0; }
 .dash-card { display: block; background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s; }
 .dash-card:hover { border-color: var(--pico-primary); }
@@ -52,6 +56,16 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 </head>
 <body>
 {{end}}
+{{define "subpageHeader"}}<div class="header">
+  <div class="header-left">
+    <div class="header-clock"><span id="clockTime"></span> <span class="date" id="clockDate"></span></div>
+  </div>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark/light theme">🌙</button>
+    <button class="auto-toggle" id="autoToggle" title="Toggle auto-reload">⟳ Auto</button>
+  </div>
+</div>
+<main class="container has-header">{{end}}
 
 {{define "camera"}}<script>
 (function() {
@@ -147,6 +161,62 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 </main>
 </body>
 </html>{{end}}
+
+{{define "clockScript"}}<script>
+(function() {
+  function updateClock() {
+    var now = new Date();
+    var timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    var dateStr = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    var t = document.getElementById('clockTime');
+    var d = document.getElementById('clockDate');
+    if (t) t.textContent = timeStr;
+    if (d) d.textContent = dateStr;
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // Theme toggle
+  var themeBtn = document.getElementById('themeToggle');
+  if (themeBtn) {
+    var saved = localStorage.getItem('theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      themeBtn.textContent = saved === 'dark' ? '☀️' : '🌙';
+    }
+    themeBtn.addEventListener('click', function() {
+      var current = document.documentElement.getAttribute('data-theme');
+      var next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      themeBtn.textContent = next === 'dark' ? '☀️' : '🌙';
+    });
+  }
+
+  // Auto-reload toggle
+  var autoBtn = document.getElementById('autoToggle');
+  var autoInterval = null;
+  if (autoBtn) {
+    var savedAuto = localStorage.getItem('autoReload');
+    if (savedAuto === 'on') {
+      autoBtn.classList.add('active');
+    }
+    autoBtn.addEventListener('click', function() {
+      var isOn = autoBtn.classList.toggle('active');
+      localStorage.setItem('autoReload', isOn ? 'on' : 'off');
+      if (isOn) {
+        autoInterval = setInterval(function() { location.reload(); }, 30000);
+      } else {
+        clearInterval(autoInterval);
+        autoInterval = null;
+      }
+    });
+    if (savedAuto === 'on') {
+      autoInterval = setInterval(function() { location.reload(); }, 30000);
+    }
+  }
+})();
+</script>{{end}}
 
 {{define "imagepreview"}}<script>
 (function() {
