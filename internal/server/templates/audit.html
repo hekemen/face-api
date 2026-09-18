@@ -31,7 +31,7 @@
   var state = { page: 1, perPage: 20, name: '', endpoint: '', matched: '' };
 
   function buildURL() {
-    var u = '/api/audit?page=' + state.page + '&per_page=' + state.perPage;
+    var u = './api/audit?page=' + state.page + '&per_page=' + state.perPage;
     if (state.name) u += '&name=' + encodeURIComponent(state.name);
     if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
     if (state.matched) u += '&matched=' + encodeURIComponent(state.matched);
