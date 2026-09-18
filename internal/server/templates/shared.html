@@ -23,22 +23,30 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
   img.face-thumb { width: 48px; height: 48px; }
 }
 /* Dashboard card grid */
-.dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1rem 0; }
-.dashboard a { display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s; }
-.dashboard a:hover { border-color: var(--pico-primary); }
-.dashboard .card-icon { font-size: 2rem; display: block; margin-bottom: 0.5rem; }
-.dashboard .card-title { font-weight: 600; }
+.dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.dash-card { display: block; background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s; }
+.dash-card:hover { border-color: var(--pico-primary); }
+.dash-card-title { font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem; }
+.dash-card-desc { color: var(--pico-muted-color); font-size: 0.85rem; margin-bottom: 0.5rem; }
+.dash-card-data { font-size: 0.85rem; }
+.dash-card-data .tag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+.tag-enroll { background: #d4edda; color: #155724; }
+.tag-recognize { background: #cce5ff; color: #004085; }
+.tag-stream-check { background: #fff3cd; color: #856404; }
+.dash-card-data .entry { padding: 0.25rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+.dash-card-data .entry:last-child { border-bottom: none; }
+.dash-card-data .entry-time { color: var(--pico-muted-color); font-size: 0.8rem; }
+.dash-card-data .entry-name { font-weight: 600; }
+.dash-card-data .entry-matched { color: var(--pico-success); }
+.dash-card-data .entry-not-matched { color: var(--pico-error); }
+.dash-card-data .stat-big { font-size: 1.8rem; font-weight: 700; color: var(--pico-primary); }
+.dash-card-data .stat-label { color: var(--pico-muted-color); font-size: 0.8rem; }
 </style>
 </head>
 <body>
 <nav role="navigation">
   <ul>
-    <li><a href="./">Home</a></li>
-    <li><a href="enroll">Enroll</a></li>
-    <li><a href="recognize">Recognize</a></li>
-    <li><a href="stream-check">Stream Check</a></li>
-    <li><a href="stats">Stats</a></li>
-    <li><a href="audit">Audit</a></li>
+    <li><strong>Face API</strong></li>
   </ul>
 </nav>
 <main class="container">{{end}}

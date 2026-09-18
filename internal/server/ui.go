@@ -21,12 +21,15 @@ var templateFS embed.FS
 
 // UIPage holds data passed to UI templates.
 type UIPage struct {
-	Result  string
-	Class   string
-	Users   []UserInfo
-	Entries []AuditEntry
-	Count   int
-	Stats   *StatsResponse
+	Result       string
+	Class        string
+	Users        []UserInfo
+	Entries      []AuditEntry
+	Count        int
+	Stats        *StatsResponse
+	DashUsers    []UserInfo
+	DashStats    *StatsResponse
+	DashAudit    []AuditEntry
 }
 
 // RegisterUIHandlers attaches the /ui web interface handlers to the given mux.
@@ -45,7 +48,81 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if path == "" {
-		s.renderTemplate(w, "index.html", nil)
+		page := UIPage{}
+
+		// Fetch users for dashboard.
+		s.mu.RLock()
+		page.DashUsers = make([]UserInfo, 0, len(s.dbMap))
+		names := make([]string, 0, len(s.dbMap))
+		for name := range s.dbMap {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			u := s.dbMap[name]
+			page.DashUsers = append(page.DashUsers, UserInfo{
+				Name:      name,
+				Pictures:  u.Pictures,
+				UpdatedAt: u.UpdatedAt,
+			})
+		}
+		s.mu.RUnlock()
+
+		// Fetch stats for dashboard.
+		var entries []AuditEntry
+		err := s.boltDB.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket(auditBucketName)
+			if b == nil {
+				return nil
+			}
+			entries = make([]AuditEntry, 0)
+			return b.ForEach(func(_, v []byte) error {
+				var e AuditEntry
+				if err := json.Unmarshal(v, &e); err != nil {
+					return nil
+				}
+				entries = append(entries, e)
+				return nil
+			})
+		})
+		if err == nil {
+			totalChecks := len(entries)
+			totalMatched := 0
+			totalNoFace := 0
+			totalNotMatched := 0
+			var lastMatched time.Time
+			for _, e := range entries {
+				if e.Matched {
+					totalMatched++
+					if e.Time.After(lastMatched) {
+						lastMatched = e.Time
+					}
+				} else if e.Name == "" {
+					totalNoFace++
+				} else {
+					totalNotMatched++
+				}
+			}
+			var lastMatchedStr *string
+			if !lastMatched.IsZero() {
+				t := lastMatched.Format(time.RFC3339)
+				lastMatchedStr = &t
+			}
+			page.DashStats = &StatsResponse{
+				TotalChecks:     totalChecks,
+				TotalMatched:    totalMatched,
+				TotalNoFace:     totalNoFace,
+				TotalNotMatched: totalNotMatched,
+				LastMatched:     lastMatchedStr,
+			}
+			// Last 10 audit entries for dashboard.
+			if len(entries) > 10 {
+				entries = entries[len(entries)-10:]
+			}
+			page.DashAudit = entries
+		}
+
+		s.renderTemplate(w, "index.html", page)
 		return
 	}
 
