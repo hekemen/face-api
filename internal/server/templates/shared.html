@@ -9,8 +9,8 @@
 /* Small overrides on top of Pico — keep the existing custom UI conventions. */
 body > nav[role="navigation"] { background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); position: sticky; top: 0; z-index: 100; padding: 0.75rem 1rem; }
 body > nav[role="navigation"] ul { margin: 0; flex-wrap: wrap; gap: 0.25rem; }
-body > main.container { max-width: 960px; }
-body > main.container.has-header { max-width: 960px; padding: 1.5rem 1rem; }
+body > main.container { max-width: 960px; padding-bottom: 3rem; }
+body > main.container.has-header { max-width: 960px; padding: 1.5rem 1rem 3rem 1rem; }
 img.face-thumb { width: 64px; height: 64px; object-fit: cover; vertical-align: middle; border-radius: 6px; border: 1px solid var(--pico-muted-border-color); }
 img.face-preview, .preview-container img { max-width: 300px; max-height: 300px; border-radius: 8px; display: block; margin: 0 auto; box-shadow: var(--pico-card-box-shadow); }
 .preview-container { margin-top: 1rem; text-align: center; }
@@ -19,7 +19,7 @@ img.face-preview, .preview-container img { max-width: 300px; max-height: 300px; 
 #cameraStage canvas { display: none; }
 .result { margin-top: 1rem; white-space: pre-wrap; word-break: break-word; border-radius: 8px; }
 .result.error { color: var(--pico-error-color, #c00); }
-footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font-size: 0.85rem; }
+footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font-size: 0.85rem; position: fixed; bottom: 0; left: 0; right: 0; background: var(--pico-card-background-color, var(--pico-background-color)); border-top: 1px solid var(--pico-muted-border-color); z-index: 100; }
 @media (max-width: 600px) {
   img.face-thumb { width: 48px; height: 48px; }
 }
@@ -168,7 +168,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 })();
 </script>{{end}}
 
-{{define "foot"}}<footer>Face API · <a href="{{.GitHubURL}}" target="_blank" rel="noopener">{{.GitHubURL}}</a> · {{.GitVersion}}</footer>
+{{define "foot"}}<footer>Face API · <a href="https://github.com/hekemen/face-api" target="_blank" rel="noopener">https://github.com/hekemen/face-api</a> · {{if .GitVersion}}{{.GitVersion}}{{else}}v0.0.8{{end}}</footer>
 </main>
 </body>
 </html>{{end}}
