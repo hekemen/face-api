@@ -67,6 +67,17 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 </div>
 <main class="container has-header">{{end}}
 
+{{define "dashHeader"}}<div class="header">
+  <div class="header-left">
+    <div class="header-clock"><span id="clockTime"></span> <span class="date" id="clockDate"></span></div>
+  </div>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark/light theme">🌙</button>
+    <button class="auto-toggle" id="autoToggle" title="Toggle auto-reload">⟳ Auto</button>
+  </div>
+</div>
+<main class="container">{{end}}
+
 {{define "camera"}}<script>
 (function() {
   'use strict';
@@ -157,7 +168,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 })();
 </script>{{end}}
 
-{{define "foot"}}<footer>Face API</footer>
+{{define "foot"}}<footer>Face API · <a href="{{.GitHubURL}}" target="_blank" rel="noopener">{{.GitHubURL}}</a> · {{.GitVersion}}</footer>
 </main>
 </body>
 </html>{{end}}
