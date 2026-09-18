@@ -3,19 +3,24 @@
 <a href="./" class="back-link">← Dashboard</a>
 
 <div id="auditFilters" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;align-items:center;">
-  <input type="text" id="filterName" placeholder="Filter by name..." style="flex:1;min-width:120px;padding:0.4rem 0.6rem;" />
+  <select id="filterUser" style="padding:0.4rem 0.6rem;min-width:140px;">
+    <option value="">All users</option>
+  </select>
   <select id="filterEndpoint" style="padding:0.4rem 0.6rem;">
     <option value="">All endpoints</option>
     <option value="enroll">enroll</option>
     <option value="recognize">recognize</option>
     <option value="stream-check">stream-check</option>
   </select>
-  <select id="filterMatched" style="padding:0.4rem 0.6rem;">
-    <option value="">All</option>
-    <option value="yes">Matched</option>
-    <option value="no">Not matched</option>
-  </select>
-  <button id="applyFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Apply</button>
+  <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
+    <input type="radio" name="matched" value="" checked /> All
+  </label>
+  <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
+    <input type="radio" name="matched" value="yes" /> Matched
+  </label>
+  <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
+    <input type="radio" name="matched" value="no" /> Not matched
+  </label>
   <button id="clearFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Clear</button>
 </div>
 
@@ -28,14 +33,42 @@
 <script>
 (function() {
   'use strict';
-  var state = { page: 1, perPage: 20, name: '', endpoint: '', matched: '' };
+  var state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '' };
+  var usersLoaded = false;
 
   function buildURL() {
     var u = './api/audit?page=' + state.page + '&per_page=' + state.perPage;
-    if (state.name) u += '&name=' + encodeURIComponent(state.name);
+    if (state.user) u += '&name=' + encodeURIComponent(state.user);
     if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
     if (state.matched) u += '&matched=' + encodeURIComponent(state.matched);
     return u;
+  }
+
+  function loadUsers() {
+    if (usersLoaded) return;
+    fetch('./users')
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        var sel = document.getElementById('filterUser');
+        if (data && data.users) {
+          data.users.forEach(function(u) {
+            var opt = document.createElement('option');
+            opt.value = u.name;
+            opt.textContent = u.name;
+            sel.appendChild(opt);
+          });
+        }
+        usersLoaded = true;
+      })
+      .catch(function() { usersLoaded = true; });
+  }
+
+  function getMatchedRadio() {
+    var radios = document.querySelectorAll('input[name="matched"]');
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) return radios[i].value;
+    }
+    return '';
   }
 
   function renderAudit(data) {
@@ -75,7 +108,6 @@
     if (state.page > 1) {
       html += '<button class="page-btn" data-page="' + (state.page - 1) + '">← Prev</button>';
     }
-    // Show up to 5 page buttons centered around current
     var start = Math.max(1, state.page - 2);
     var end = Math.min(totalPages, start + 4);
     if (end - start < 4) start = Math.max(1, end - 4);
@@ -95,21 +127,27 @@
       .catch(function(err) { console.error('Audit load failed:', err); });
   }
 
-  // Event listeners
-  document.getElementById('applyFilters').addEventListener('click', function() {
+  function applyState() {
     state.page = 1;
-    state.name = document.getElementById('filterName').value;
+    state.user = document.getElementById('filterUser').value;
     state.endpoint = document.getElementById('filterEndpoint').value;
-    state.matched = document.getElementById('filterMatched').value;
+    state.matched = getMatchedRadio();
     loadAudit();
+  }
+
+  // Event listeners
+  document.getElementById('filterUser').addEventListener('change', applyState);
+  document.getElementById('filterEndpoint').addEventListener('change', applyState);
+  document.querySelectorAll('input[name="matched"]').forEach(function(radio) {
+    radio.addEventListener('change', applyState);
   });
 
   document.getElementById('clearFilters').addEventListener('click', function() {
-    document.getElementById('filterName').value = '';
+    document.getElementById('filterUser').value = '';
     document.getElementById('filterEndpoint').value = '';
-    document.getElementById('filterMatched').value = '';
+    document.querySelector('input[name="matched"][value=""]').checked = true;
     state.page = 1;
-    state.name = '';
+    state.user = '';
     state.endpoint = '';
     state.matched = '';
     loadAudit();
@@ -125,17 +163,11 @@
     }
   });
 
-  // Enter key on name filter
-  document.getElementById('filterName').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-      document.getElementById('applyFilters').click();
-    }
-  });
-
   // Auto-refresh every 30s (respects current filters/page)
   setInterval(loadAudit, 30000);
 
   // Initial load
+  loadUsers();
   loadAudit();
 })();
 </script>
