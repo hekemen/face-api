@@ -207,17 +207,20 @@ func (b *Bridge) worker() {
 				}
 			}
 
-			// Publish result JSON.
+			// Publish result JSON (includes name, matched, similarity, face_image).
 			resultJSON, _ := json.Marshal(result)
 			resultTopic := b.cfg.BaseTopic + "/result"
 			b.client.Publish(resultTopic, 1, true, resultJSON)
 
-			// Publish matched state.
-			matched := result.Matched
-			matchedJSON, _ := json.Marshal(map[string]any{
-				"matched":   matched,
-				"last_scan": time.Now().UTC().Format(time.RFC3339),
-			})
+			// Publish matched state with face image thumbnail.
+			matchedPayload := map[string]any{
+				"matched":     result.Matched,
+				"name":        result.Name,
+				"similarity":  result.Similarity,
+				"last_scan":   time.Now().UTC().Format(time.RFC3339),
+				"face_image":  result.FaceImage,
+			}
+			matchedJSON, _ := json.Marshal(matchedPayload)
 			matchedTopic := b.cfg.BaseTopic + "/matched"
 			b.client.Publish(matchedTopic, 1, true, matchedJSON)
 		}
@@ -239,9 +242,9 @@ func (b *Bridge) publishDiscovery(c mqtt.Client) {
 	sensorConfig := map[string]any{
 		"name":                  "Last Result",
 		"unique_id":             "face_api_last_result",
-		"state_topic":           b.cfg.BaseTopic + "/result",
-		"value_template":        "{{ value_json.name if value_json.name else 'unknown' }}",
-		"json_attributes_topic": b.cfg.BaseTopic + "/result",
+		"state_topic":           b.cfg.BaseTopic + "/matched",
+		"value_template":        "{{ 'matched ' + value_json.name if value_json.matched else 'not matched' }}",
+		"json_attributes_topic": b.cfg.BaseTopic + "/matched",
 		"device":                device,
 		"availability_topic":    availTopic,
 		"payload_available":     "online",
@@ -256,6 +259,8 @@ func (b *Bridge) publishDiscovery(c mqtt.Client) {
 		"unique_id":             "face_api_matched",
 		"state_topic":           b.cfg.BaseTopic + "/matched",
 		"value_template":        "{{ value_json.matched }}",
+		"payload_on":            true,
+		"payload_off":           false,
 		"device":                device,
 		"availability_topic":    availTopic,
 		"payload_available":     "online",

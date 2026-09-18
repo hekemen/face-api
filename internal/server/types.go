@@ -23,6 +23,7 @@ type StreamCheckResponse struct {
 	Similarity float32 `json:"similarity,omitempty"`
 	Reason     string  `json:"reason,omitempty"`
 	Matched    bool    `json:"matched,omitempty"`
+	FaceImage  string  `json:"face_image,omitempty"`
 }
 
 // EnrolledResponse is returned by the enroll endpoint on success.

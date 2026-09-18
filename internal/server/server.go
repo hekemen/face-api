@@ -684,6 +684,7 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 			Name:              bestMatch,
 			Similarity:        highestScore,
 			Matched:           true,
+			FaceImage:         faceImage,
 		}, nil
 	}
 
@@ -693,6 +694,7 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 		Reason:            "No face detected within 3 seconds",
 		Similarity:        highestScore,
 		Matched:           false,
+		FaceImage:         faceImage,
 	}, nil
 }
 
