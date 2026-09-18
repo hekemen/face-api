@@ -22,6 +22,12 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 @media (max-width: 600px) {
   img.face-thumb { width: 48px; height: 48px; }
 }
+/* Dashboard card grid */
+.dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.dashboard a { display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s; }
+.dashboard a:hover { border-color: var(--pico-primary); }
+.dashboard .card-icon { font-size: 2rem; display: block; margin-bottom: 0.5rem; }
+.dashboard .card-title { font-weight: 600; }
 </style>
 </head>
 <body>

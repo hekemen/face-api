@@ -1,11 +1,30 @@
 {{template "head" .}}
-<h1>Face API</h1>
-<p>Use the navigation above to interact with the face recognition service.</p>
-<ul>
-  <li><strong>Enroll</strong> - Register a new face with a name</li>
-  <li><strong>Recognize</strong> - Identify a face from enrolled users</li>
-  <li><strong>Stream Check</strong> - Check an RTSP stream for recognized faces</li>
-  <li><strong>Users</strong> - List all enrolled users</li>
-  <li><strong>Audit</strong> - View recent face scan audit log</li>
-</ul>
+<div class="container">
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+    <a href="enroll" style="display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--pico-primary)'" onmouseout="this.style.borderColor='var(--pico-muted-border-color)'">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">📷</div>
+      <div style="font-weight: 600;">Enroll Face</div>
+    </a>
+    <a href="recognize" style="display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--pico-primary)'" onmouseout="this.style.borderColor='var(--pico-muted-border-color)'">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔍</div>
+      <div style="font-weight: 600;">Recognize</div>
+    </a>
+    <a href="stream-check" style="display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--pico-primary)'" onmouseout="this.style.borderColor='var(--pico-muted-border-color)'">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">📡</div>
+      <div style="font-weight: 600;">Stream Check</div>
+    </a>
+    <a href="enroll" style="display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--pico-primary)'" onmouseout="this.style.borderColor='var(--pico-muted-border-color)'">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">👥</div>
+      <div style="font-weight: 600;">Users</div>
+    </a>
+    <a href="stats" style="display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--pico-primary)'" onmouseout="this.style.borderColor='var(--pico-muted-border-color)'">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">📊</div>
+      <div style="font-weight: 600;">Statistics</div>
+    </a>
+    <a href="audit" style="display: block; background: var(--pico-card-background-color); padding: 1.5rem; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s;" onmouseover="this.style.borderColor='var(--pico-primary)'" onmouseout="this.style.borderColor='var(--pico-muted-border-color)'">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">📋</div>
+      <div style="font-weight: 600;">Audit Log</div>
+    </a>
+  </div>
+</div>
 {{template "foot" .}}
