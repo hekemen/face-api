@@ -37,7 +37,7 @@
   var usersLoaded = false;
 
   function buildURL() {
-    var u = './api/audit?page=' + state.page + '&per_page=' + state.perPage;
+    var u = '../api/audit?page=' + state.page + '&per_page=' + state.perPage;
     if (state.user) u += '&name=' + encodeURIComponent(state.user);
     if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
     if (state.matched) u += '&matched=' + encodeURIComponent(state.matched);
@@ -46,7 +46,7 @@
 
   function loadUsers() {
     if (usersLoaded) return;
-    fetch('./users')
+    fetch('../users')
       .then(function(resp) { return resp.json(); })
       .then(function(data) {
         var sel = document.getElementById('filterUser');
