@@ -113,6 +113,16 @@ func main() {
 		mqttBridge, err = mqtt.New(mqttCfg, srv.RunStreamCheck)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
+		} else {
+			mqttBridge.SetEnrollFunc(srv.EnrollFromBase64)
+			mqttBridge.SetDeleteFunc(func(name string) (map[string]string, error) {
+				err := srv.DeleteUser(name)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]string{"status": "deleted", "name": name}, nil
+			})
+			mqttBridge.SetListUsersFunc(srv.ListUsers)
 		}
 	}
 

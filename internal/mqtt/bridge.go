@@ -18,6 +18,15 @@ import (
 // a trigger message arrives. It returns the result of the check.
 type CheckFunc func(rtspURL string) (server.StreamCheckResponse, error)
 
+// EnrollFunc enrolls a face image for a user. The image is a base64-encoded JPEG.
+type EnrollFunc func(name string, imageBase64 string) (server.EnrolledResponse, error)
+
+// DeleteFunc removes a user by name.
+type DeleteFunc func(name string) (map[string]string, error)
+
+// ListUsersFunc returns the list of enrolled users.
+type ListUsersFunc func() (server.UsersListResponse, error)
+
 // Config holds MQTT configuration.
 type Config struct {
 	BrokerURL       string
@@ -35,6 +44,9 @@ type Config struct {
 type Bridge struct {
 	cfg    Config
 	check  CheckFunc
+	enroll EnrollFunc
+	delete DeleteFunc
+	list   ListUsersFunc
 	client mqtt.Client
 	log    zerolog.Logger
 	queue  chan struct{}
@@ -92,9 +104,11 @@ func New(cfg Config, check CheckFunc) (*Bridge, error) {
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		// Publish "online" on connect.
 		c.Publish(lwtTopic, 1, true, "online")
-		// Subscribe to trigger topic.
+		// Subscribe to trigger and command topics.
 		triggerTopic := cfg.BaseTopic + "/trigger"
 		c.Subscribe(triggerTopic, 1, b.onMessage)
+		cmdTopic := cfg.BaseTopic + "/cmd"
+		c.Subscribe(cmdTopic, 1, b.onCommand)
 		// Publish HA discovery configs.
 		b.publishDiscovery(c)
 	})
@@ -107,6 +121,21 @@ func New(cfg Config, check CheckFunc) (*Bridge, error) {
 	b.client = mqtt.NewClient(opts)
 
 	return b, nil
+}
+
+// SetEnrollFunc attaches an enroll function to the bridge.
+func (b *Bridge) SetEnrollFunc(f EnrollFunc) {
+	b.enroll = f
+}
+
+// SetDeleteFunc attaches a delete function to the bridge.
+func (b *Bridge) SetDeleteFunc(f DeleteFunc) {
+	b.delete = f
+}
+
+// SetListUsersFunc attaches a list-users function to the bridge.
+func (b *Bridge) SetListUsersFunc(f ListUsersFunc) {
+	b.list = f
 }
 
 // Run starts the MQTT connection and blocks until ctx is cancelled.
@@ -162,7 +191,7 @@ func (b *Bridge) Stop() {
 	b.client.Disconnect(250)
 }
 
-// onMessage handles incoming trigger messages.
+// onMessage handles incoming trigger messages (stream-check).
 func (b *Bridge) onMessage(_ mqtt.Client, msg mqtt.Message) {
 	payload := string(msg.Payload())
 	if payload == "" {
@@ -191,6 +220,73 @@ func (b *Bridge) onMessage(_ mqtt.Client, msg mqtt.Message) {
 	}
 }
 
+// onCommand handles incoming command messages (enroll, delete, list).
+func (b *Bridge) onCommand(_ mqtt.Client, msg mqtt.Message) {
+	payload := string(msg.Payload())
+	if payload == "" {
+		return
+	}
+
+	var cmd struct {
+		Action string          `json:"action"`
+		Name   string          `json:"name"`
+		Image  string          `json:"image"`
+	}
+	if err := json.Unmarshal([]byte(payload), &cmd); err != nil {
+		b.log.Warn().Err(err).Msg("invalid command payload")
+		return
+	}
+
+	switch cmd.Action {
+	case "enroll":
+		if b.enroll == nil {
+			b.client.Publish(b.responseTopic("enroll"), 1, true, mustJSON(map[string]any{"error": "enroll not configured"}))
+			return
+		}
+		if cmd.Name == "" || cmd.Image == "" {
+			b.client.Publish(b.responseTopic("enroll"), 1, true, mustJSON(map[string]any{"error": "missing name or image"}))
+			return
+		}
+		resp, err := b.enroll(cmd.Name, cmd.Image)
+		if err != nil {
+			b.client.Publish(b.responseTopic("enroll"), 1, true, mustJSON(map[string]any{"error": err.Error()}))
+			return
+		}
+		b.client.Publish(b.responseTopic("enroll"), 1, true, mustJSON(resp))
+
+	case "delete":
+		if b.delete == nil {
+			b.client.Publish(b.responseTopic("delete"), 1, true, mustJSON(map[string]any{"error": "delete not configured"}))
+			return
+		}
+		if cmd.Name == "" {
+			b.client.Publish(b.responseTopic("delete"), 1, true, mustJSON(map[string]any{"error": "missing name"}))
+			return
+		}
+		resp, err := b.delete(cmd.Name)
+		if err != nil {
+			b.client.Publish(b.responseTopic("delete"), 1, true, mustJSON(map[string]any{"error": err.Error()}))
+			return
+		}
+		b.client.Publish(b.responseTopic("delete"), 1, true, mustJSON(resp))
+
+	case "list":
+		if b.list == nil {
+			b.client.Publish(b.responseTopic("list"), 1, true, mustJSON(map[string]any{"error": "list not configured"}))
+			return
+		}
+		resp, err := b.list()
+		if err != nil {
+			b.client.Publish(b.responseTopic("list"), 1, true, mustJSON(map[string]any{"error": err.Error()}))
+			return
+		}
+		b.client.Publish(b.responseTopic("list"), 1, true, mustJSON(resp))
+
+	default:
+		b.log.Warn().Str("action", cmd.Action).Msg("unknown command")
+	}
+}
+
 // worker dequeues triggers and runs the check function.
 func (b *Bridge) worker() {
 	defer b.wg.Done()
@@ -214,11 +310,11 @@ func (b *Bridge) worker() {
 
 			// Publish matched state with face image thumbnail.
 			matchedPayload := map[string]any{
-				"matched":     result.Matched,
-				"name":        result.Name,
-				"similarity":  result.Similarity,
-				"last_scan":   time.Now().UTC().Format(time.RFC3339),
-				"face_image":  result.FaceImage,
+				"matched":    result.Matched,
+				"name":       result.Name,
+				"similarity": result.Similarity,
+				"last_scan":  time.Now().UTC().Format(time.RFC3339),
+				"face_image": result.FaceImage,
 			}
 			matchedJSON, _ := json.Marshal(matchedPayload)
 			matchedTopic := b.cfg.BaseTopic + "/matched"
@@ -282,10 +378,58 @@ func (b *Bridge) publishDiscovery(c mqtt.Client) {
 		"availability_mode":     availMode,
 	}
 	c.Publish(b.discoveryTopic("button", "face_api_check"), 1, true, mustJSON(buttonConfig))
+
+	// Button: enroll (triggers a snapshot capture in HA, sends image via MQTT).
+	enrollConfig := map[string]any{
+		"name":                  "Enroll",
+		"unique_id":             "face_api_enroll",
+		"command_topic":         b.cfg.BaseTopic + "/cmd",
+		"payload_press":         `{"action":"enroll"}`,
+		"device":                device,
+		"availability_topic":    availTopic,
+		"payload_available":     "online",
+		"payload_not_available": "offline",
+		"availability_mode":     availMode,
+	}
+	c.Publish(b.discoveryTopic("button", "face_api_enroll"), 1, true, mustJSON(enrollConfig))
+
+	// Button: delete user.
+	deleteConfig := map[string]any{
+		"name":                  "Delete User",
+		"unique_id":             "face_api_delete",
+		"command_topic":         b.cfg.BaseTopic + "/cmd",
+		"payload_press":         `{"action":"delete"}`,
+		"device":                device,
+		"availability_topic":    availTopic,
+		"payload_available":     "online",
+		"payload_not_available": "offline",
+		"availability_mode":     availMode,
+	}
+	c.Publish(b.discoveryTopic("button", "face_api_delete"), 1, true, mustJSON(deleteConfig))
+
+	// Select: user list (populated dynamically via list command).
+	selectConfig := map[string]any{
+		"name":                   "User",
+		"unique_id":              "face_api_user",
+		"command_topic":          b.cfg.BaseTopic + "/cmd",
+		"value_template":         "{{ value_json.name }}",
+		"options_topic":          b.cfg.BaseTopic + "/res/list",
+		"options_value_template": "{{ value_json.users | map(attribute='name') | list }}",
+		"device":                 device,
+		"availability_topic":     availTopic,
+		"payload_available":      "online",
+		"payload_not_available":  "offline",
+		"availability_mode":      availMode,
+	}
+	c.Publish(b.discoveryTopic("select", "face_api_user"), 1, true, mustJSON(selectConfig))
 }
 
 func (b *Bridge) discoveryTopic(component, objectID string) string {
 	return fmt.Sprintf("%s/%s/%s/config", b.cfg.DiscoveryPrefix, component, objectID)
+}
+
+func (b *Bridge) responseTopic(action string) string {
+	return b.cfg.BaseTopic + "/res/" + action
 }
 
 func (b *Bridge) swVersion() string {
