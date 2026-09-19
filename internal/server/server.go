@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -702,83 +703,166 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 		}, fmt.Errorf("missing RTSP URL")
 	}
 
-	img, err := readRTSPFrame(rtspURL, 3*time.Second)
-	if err != nil {
-		reason := "Failed to connect to RTSP stream"
-		if strings.Contains(err.Error(), "codec") {
-			reason = err.Error()
+	// Connect to RTSP stream once, then read frames in a loop for up to 10s.
+	// Each frame is checked for faces and matched against enrolled users.
+	// Returns on first match above threshold, or "not ok" after timeout.
+	const streamTimeout = 10 * time.Second
+	const frameInterval = 500 * time.Millisecond
+
+	connCtx, connCancel := context.WithTimeout(context.Background(), streamTimeout)
+	defer connCancel()
+
+	type frameResult struct {
+		img *rgbImage
+		err error
+	}
+	frameCh := make(chan frameResult, 1)
+
+	// Start a goroutine that reads frames from the RTSP stream.
+	go func() {
+		for {
+			select {
+			case <-connCtx.Done():
+				return
+			default:
+			}
+			img, err := readRTSPFrame(rtspURL, frameInterval)
+			if err != nil {
+				select {
+				case frameCh <- frameResult{err: err}:
+				default:
+				}
+				return
+			}
+			select {
+			case frameCh <- frameResult{img: img}:
+			default:
+			}
 		}
-		return StreamCheckResponse{
-			Status: "not ok",
-			Reason: reason,
-		}, err
-	}
+	}()
 
-	cropped, _, err := s.detectAndCrop112(img)
-	if err != nil {
-		return StreamCheckResponse{
-			Status: "not ok",
-			Reason: "No face detected within 3 seconds",
-		}, nil
-	}
+	var lastFaceImage string
+	var lastScore float32
+	var lastMatch string
 
-	queryVec, err := s.extractEmbedding(cropped)
-	faceImage, imgErr := encodeFaceToBase64(cropped)
-	if imgErr != nil {
-		s.log.Error().Err(imgErr).Msg("failed to encode face image")
-	}
-	if err != nil {
-		return StreamCheckResponse{
-			Status: "not ok",
-			Reason: "No face detected within 3 seconds",
-		}, nil
-	}
+	for {
+		select {
+		case <-connCtx.Done():
+			goto done
+		case res := <-frameCh:
+			if res.err != nil {
+				reason := "Failed to read RTSP stream"
+				if strings.Contains(res.err.Error(), "codec") {
+					reason = res.err.Error()
+				}
+				return StreamCheckResponse{
+					Status:     "not ok",
+					Reason:     reason,
+					Similarity: lastScore,
+					Name:       lastMatch,
+					Matched:    lastScore >= s.threshold,
+					FaceImage:  lastFaceImage,
+					OperationDuration: OperationDuration{
+						DurationMs: time.Since(start).Milliseconds(),
+					},
+				}, res.err
+			}
 
-	s.mu.RLock()
-	var bestMatch string
-	var highestScore float32 = -1.0
-	for name, user := range s.dbMap {
-		score := bestEmbeddingScore(queryVec, user.Embeddings)
-		if score > highestScore {
-			highestScore = score
-			bestMatch = name
+			cropped, _, err := s.detectAndCrop112(res.img)
+			if err != nil {
+				continue // no face on this frame, try next
+			}
+
+			queryVec, err := s.extractEmbedding(cropped)
+			if err != nil {
+				continue // embedding failed, try next frame
+			}
+
+			faceImage, imgErr := encodeFaceToBase64(cropped)
+			if imgErr != nil {
+				s.log.Error().Err(imgErr).Msg("failed to encode face image")
+			}
+
+			s.mu.RLock()
+			var bestMatch string
+			var highestScore float32 = -1.0
+			for name, user := range s.dbMap {
+				score := bestEmbeddingScore(queryVec, user.Embeddings)
+				if score > highestScore {
+					highestScore = score
+					bestMatch = name
+				}
+			}
+			s.mu.RUnlock()
+
+			// Track the best result seen so far.
+			if highestScore > lastScore {
+				lastScore = highestScore
+				lastMatch = bestMatch
+				lastFaceImage = faceImage
+			}
+
+			// If we have a match above threshold, return immediately.
+			if highestScore >= s.threshold {
+				dur := OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+				auditEntry := AuditEntry{
+					Time:       time.Now(),
+					Endpoint:   "stream-check",
+					Name:       bestMatch,
+					Similarity: highestScore,
+					Matched:    true,
+					DurationMs: dur.DurationMs,
+					FaceImage:  faceImage,
+				}
+				if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
+					s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
+				}
+				return StreamCheckResponse{
+					OperationDuration: dur,
+					Status:            "ok",
+					Name:              bestMatch,
+					Similarity:        highestScore,
+					Matched:           true,
+					FaceImage:         faceImage,
+				}, nil
+			}
 		}
 	}
-	s.mu.RUnlock()
 
+done:
+	// Timeout reached — write audit entry for the best result seen.
 	dur := OperationDuration{DurationMs: time.Since(start).Milliseconds()}
-
 	auditEntry := AuditEntry{
 		Time:       time.Now(),
 		Endpoint:   "stream-check",
-		Name:       bestMatch,
-		Similarity: highestScore,
-		Matched:    highestScore >= s.threshold,
+		Name:       lastMatch,
+		Similarity: lastScore,
+		Matched:    lastScore >= s.threshold,
 		DurationMs: dur.DurationMs,
-		FaceImage:  faceImage,
+		FaceImage:  lastFaceImage,
 	}
 	if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
 		s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
 	}
 
-	if highestScore >= s.threshold {
+	if lastScore >= s.threshold {
 		return StreamCheckResponse{
 			OperationDuration: dur,
 			Status:            "ok",
-			Name:              bestMatch,
-			Similarity:        highestScore,
+			Name:              lastMatch,
+			Similarity:        lastScore,
 			Matched:           true,
-			FaceImage:         faceImage,
+			FaceImage:         lastFaceImage,
 		}, nil
 	}
 
 	return StreamCheckResponse{
 		OperationDuration: dur,
 		Status:            "not ok",
-		Reason:            "No face detected within 3 seconds",
-		Similarity:        highestScore,
+		Reason:            "No match found within 10 seconds",
+		Similarity:        lastScore,
 		Matched:           false,
-		FaceImage:         faceImage,
+		FaceImage:         lastFaceImage,
 	}, nil
 }
 
