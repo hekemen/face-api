@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -526,6 +527,89 @@ func (s *FaceServer) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// EnrollFromBase64 enrolls a face from a base64-encoded JPEG image.
+// Used by the MQTT bridge for Home Assistant integrations.
+func (s *FaceServer) EnrollFromBase64(name string, imageBase64 string) (EnrolledResponse, error) {
+	start := time.Now()
+
+	// Decode base64.
+	data, err := base64.StdEncoding.DecodeString(imageBase64)
+	if err != nil {
+		return EnrolledResponse{}, fmt.Errorf("invalid base64 image: %v", err)
+	}
+
+	// Decode image.
+	img, err := decodeRGB(data)
+	if err != nil {
+		return EnrolledResponse{}, fmt.Errorf("invalid image: %v", err)
+	}
+
+	cropped, _, err := s.detectAndCrop112(img)
+	if err != nil {
+		return EnrolledResponse{}, fmt.Errorf("face detection failed: %v", err)
+	}
+
+	faceImage, imgErr := encodeFaceToBase64(cropped)
+	if imgErr != nil {
+		s.log.Error().Err(imgErr).Str("name", name).Msg("failed to encode face image")
+	}
+
+	embedding, err := s.extractEmbedding(cropped)
+	if err != nil {
+		return EnrolledResponse{}, fmt.Errorf("face processing failed")
+	}
+
+	s.mu.Lock()
+	existing := s.dbMap[name]
+	if existing == nil {
+		existing = &storedUser{}
+	}
+	if len(existing.Embeddings) >= 3 {
+		s.mu.Unlock()
+		return EnrolledResponse{}, fmt.Errorf("maximum 3 pictures per user")
+	}
+	now := time.Now()
+	pictures := existing.Pictures
+	if faceImage != "" {
+		pictures = append(pictures, faceImage)
+	}
+	updated := &storedUser{
+		Embeddings: append(existing.Embeddings, embedding),
+		Pictures:   pictures,
+		UpdatedAt:  now,
+	}
+
+	err = s.boltDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		return b.Put([]byte(name), marshalUser(updated))
+	})
+	if err != nil {
+		s.mu.Unlock()
+		return EnrolledResponse{}, fmt.Errorf("failed to write to database")
+	}
+
+	s.dbMap[name] = updated
+	s.mu.Unlock()
+
+	if err := s.storeAudit([]AuditEntry{{
+		Time:       now,
+		Endpoint:   "enroll",
+		Name:       name,
+		Similarity: 1.0,
+		Matched:    true,
+		DurationMs: time.Since(start).Milliseconds(),
+		FaceImage:  faceImage,
+	}}); err != nil {
+		s.log.Error().Err(err).Str("name", name).Msg("failed to write enroll audit entry")
+	}
+
+	return EnrolledResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Status:            "enrolled",
+		Name:              name,
+	}, nil
+}
+
 func (s *FaceServer) handleRecognize(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	start := time.Now()
@@ -934,4 +1018,49 @@ func (s *FaceServer) deleteUser(name string) {
 	s.mu.Lock()
 	delete(s.dbMap, name)
 	s.mu.Unlock()
+}
+
+// DeleteUser removes a user from the Faces bucket and in-memory cache.
+// Returns an error if the bbolt delete fails.
+func (s *FaceServer) DeleteUser(name string) error {
+	err := s.boltDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return nil
+		}
+		return b.Delete([]byte(name))
+	})
+	if err != nil {
+		s.log.Error().Err(err).Str("name", name).Msg("failed to delete user from bbolt")
+		return err
+	}
+
+	s.mu.Lock()
+	delete(s.dbMap, name)
+	s.mu.Unlock()
+	return nil
+}
+
+// ListUsers returns the list of enrolled users.
+func (s *FaceServer) ListUsers() (UsersListResponse, error) {
+	s.mu.RLock()
+	users := make([]UserInfo, 0, len(s.dbMap))
+	names := make([]string, 0, len(s.dbMap))
+	for name := range s.dbMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		u := s.dbMap[name]
+		users = append(users, UserInfo{
+			Name:      name,
+			Pictures:  u.Pictures,
+			UpdatedAt: u.UpdatedAt,
+		})
+	}
+	s.mu.RUnlock()
+
+	return UsersListResponse{
+		Users: users,
+	}, nil
 }
