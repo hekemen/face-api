@@ -32,7 +32,11 @@ type UIPage struct {
 	DashAudit    []AuditEntry
 	GitVersion   string
 	GitHubURL    string
+	BuildTime    string
 }
+
+// buildTime is set at build time via -ldflags.
+var buildTime = ""
 
 // RegisterUIHandlers attaches the /ui web interface handlers to the given mux.
 // Only called when enableUI is true.
@@ -53,6 +57,7 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		page := UIPage{
 			GitVersion:  "v0.0.8",
 			GitHubURL:   "https://github.com/hekemen/face-api",
+			BuildTime:   buildTime,
 		}
 
 		// Fetch users for dashboard.
@@ -209,7 +214,7 @@ func (s *FaceServer) handleUIEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.RUnlock()
 
-		s.renderTemplate(w, "enroll.html", UIPage{Users: users})
+		s.renderTemplate(w, "enroll.html", UIPage{Users: users, BuildTime: buildTime})
 		return
 	}
 
@@ -238,12 +243,12 @@ func (s *FaceServer) handleUIEnroll(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		s.mu.RUnlock()
-		s.renderTemplate(w, "enroll.html", UIPage{Result: result, Class: "", Users: users})
+		s.renderTemplate(w, "enroll.html", UIPage{Result: result, Class: "", Users: users, BuildTime: buildTime})
 		return
 	}
 
 	result, class := s.proxyAPI(w, r, "/enroll")
-	page := UIPage{Result: result, Class: class}
+	page := UIPage{Result: result, Class: class, BuildTime: buildTime}
 	if class == "" {
 		var resp EnrolledResponse
 		if err := json.Unmarshal([]byte(result), &resp); err == nil {
@@ -268,17 +273,18 @@ func (s *FaceServer) handleUIEnroll(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	page.Users = users
+	page.BuildTime = buildTime
 	s.renderTemplate(w, "enroll.html", page)
 }
 
 func (s *FaceServer) handleUIRecognize(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "recognize.html", UIPage{})
+		s.renderTemplate(w, "recognize.html", UIPage{BuildTime: buildTime})
 		return
 	}
 
 	result, class := s.proxyAPI(w, r, "/recognize")
-	page := UIPage{Result: result, Class: class}
+	page := UIPage{Result: result, Class: class, BuildTime: buildTime}
 	if class == "" {
 		var resp RecognitionResult
 		if err := json.Unmarshal([]byte(result), &resp); err == nil {
@@ -291,12 +297,12 @@ func (s *FaceServer) handleUIRecognize(w http.ResponseWriter, r *http.Request) {
 
 func (s *FaceServer) handleUIStreamCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "stream-check.html", UIPage{})
+		s.renderTemplate(w, "stream-check.html", UIPage{BuildTime: buildTime})
 		return
 	}
 
 	result, class := s.proxyAPI(w, r, "/stream-check")
-	page := UIPage{Result: result, Class: class}
+	page := UIPage{Result: result, Class: class, BuildTime: buildTime}
 	if class == "" {
 		var resp StreamCheckResponse
 		if err := json.Unmarshal([]byte(result), &resp); err == nil {
@@ -322,8 +328,9 @@ func (s *FaceServer) handleUIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "audit.html", UIPage{
-		Entries: entries,
-		Count:   len(entries),
+		Entries:   entries,
+		Count:     len(entries),
+		BuildTime: buildTime,
 	})
 }
 
@@ -381,5 +388,5 @@ func (s *FaceServer) handleUIStats(w http.ResponseWriter, r *http.Request) {
 		TotalNotMatched: totalNotMatched,
 		LastMatched:     lastMatchedStr,
 	}
-	s.renderTemplate(w, "stats.html", UIPage{Stats: stats})
+	s.renderTemplate(w, "stats.html", UIPage{Stats: stats, BuildTime: buildTime})
 }

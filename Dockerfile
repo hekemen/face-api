@@ -13,13 +13,16 @@ ARG TARGETARCH
 
 WORKDIR /app
 
+ARG BUILD_TIME
+ARG GIT_VERSION
+
 # Cache Go modules
 COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code and cross-compile the pure-Go binary for TARGETARCH.
 COPY . .
-RUN CGO_ENABLED=0 GOARCH=${TARGETARCH:-amd64} go build -ldflags="-s -w" -o face-api ./cmd/face-api
+RUN CGO_ENABLED=0 GOARCH=${TARGETARCH:-amd64} go build -ldflags="-s -w -X h2hsecure.com/face/internal/server.buildTime=${BUILD_TIME}" -o face-api ./cmd/face-api
 
 # --- Stage 2: Runtime ---
 FROM --platform=linux/${TARGETARCH:-amd64} debian:trixie-slim
