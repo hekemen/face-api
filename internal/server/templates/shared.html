@@ -171,7 +171,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 })();
 </script>{{end}}
 
-{{define "foot"}}<footer>Face API · <a href="https://github.com/hekemen/face-api" target="_blank" rel="noopener">https://github.com/hekemen/face-api</a> · {{if .GitVersion}}{{.GitVersion}}{{else}}v0.0.8{{end}}</footer>
+{{define "foot"}}<footer>Face API · <a href="https://github.com/hekemen/face-api" target="_blank" rel="noopener">https://github.com/hekemen/face-api</a> · {{if .GitVersion}}{{.GitVersion}}{{else}}v0.0.8{{end}}{{if .BuildTime}} ({{.BuildTime}}){{end}}</footer>
 </main>
 </body>
 </html>{{end}}
