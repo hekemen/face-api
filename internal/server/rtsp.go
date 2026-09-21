@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,10 +17,22 @@ import (
 	"github.com/pion/rtp"
 )
 
-// readRTSPFrame connects to an RTSP server, reads one decoded frame (MJPEG or
-// H.264) within the timeout, and returns it as an rgbImage. If the stream uses
-// any other codec, it returns a descriptive error without reading any frames.
-func readRTSPFrame(url string, timeout time.Duration) (*rgbImage, error) {
+// rtspReader maintains a persistent RTSP connection and reads frames
+// continuously. It handles reconnection on transient errors.
+type rtspReader struct {
+	url         string
+	client      *gortsplib.Client
+	media       *description.Media
+	format      format.Format
+	mjpegDec    *rtpmjpeg.Decoder
+	h264Dec     *rtph264.Decoder
+	gvDecoder   *govidh264.Decoder
+	isMJPEG     bool
+	proto       gortsplib.Protocol
+}
+
+// newRTSPReader opens a persistent connection to the RTSP stream.
+func newRTSPReader(url string, timeout time.Duration) (*rtspReader, error) {
 	u, err := base.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("invalid RTSP URL: %w", err)
@@ -35,7 +48,6 @@ func readRTSPFrame(url string, timeout time.Duration) (*rgbImage, error) {
 		AnyPortEnable:            true,
 		DisableRTCPSenderReports: true,
 	}
-	defer c.Close()
 
 	if err := c.Start(); err != nil {
 		return nil, fmt.Errorf("RTSP connect: %w", err)
@@ -43,108 +55,93 @@ func readRTSPFrame(url string, timeout time.Duration) (*rgbImage, error) {
 
 	desc, _, err := c.Describe(u)
 	if err != nil {
+		c.Close()
 		return nil, fmt.Errorf("RTSP describe: %w", err)
 	}
 
-	// Prefer MJPEG when available; fall back to H.264 (the two codecs the
-	// pure-Go pipeline can decode). Reject anything else.
-	for _, media := range desc.Medias {
-		for _, forma := range media.Formats {
-			if f, ok := forma.(*format.MJPEG); ok {
-				return readRTSPFrameMJPEG(c, u, desc, media, f, timeout)
+	// Find codec
+	var media *description.Media
+	var forma format.Format
+	for _, m := range desc.Medias {
+		for _, f := range m.Formats {
+			if _, ok := f.(*format.MJPEG); ok {
+				media, forma = m, f
+				break
+			}
+		}
+		if media != nil {
+			break
+		}
+	}
+	if media == nil {
+		for _, m := range desc.Medias {
+			for _, f := range m.Formats {
+				if _, ok := f.(*format.H264); ok {
+					media, forma = m, f
+					break
+				}
+			}
+			if media != nil {
+				break
 			}
 		}
 	}
-	for _, media := range desc.Medias {
-		for _, forma := range media.Formats {
-			if f, ok := forma.(*format.H264); ok {
-				return readRTSPFrameH264(c, u, desc, media, f, timeout)
+	if media == nil {
+		for _, m := range desc.Medias {
+			for _, f := range m.Formats {
+				if _, ok := f.(*format.H265); ok {
+					c.Close()
+					return nil, fmt.Errorf("RTSP stream is H.265 (unsupported codec - H.264 and MJPEG only)")
+				}
 			}
 		}
+		c.Close()
+		return nil, fmt.Errorf("RTSP stream has no supported codec (H.264 or MJPEG only)")
 	}
-	for _, media := range desc.Medias {
-		for _, forma := range media.Formats {
-			if _, ok := forma.(*format.H265); ok {
-				return nil, fmt.Errorf("RTSP stream is H.265 (unsupported codec - H.264 and MJPEG only)")
-			}
-		}
-	}
-	return nil, fmt.Errorf("RTSP stream has no supported codec (H.264 or MJPEG only)")
-}
 
-func readRTSPFrameMJPEG(c *gortsplib.Client, u *base.URL, desc *description.Session,
-	media *description.Media, f *format.MJPEG, timeout time.Duration) (*rgbImage, error) {
-	decoder, err := f.CreateDecoder()
-	if err != nil {
-		return nil, fmt.Errorf("create MJPEG decoder: %w", err)
+	r := &rtspReader{
+		url:    url,
+		client: c,
+		media:  media,
+		format: forma,
+		proto:  proto,
+	}
+
+	if _, ok := forma.(*format.MJPEG); ok {
+		dec, err := forma.(*format.MJPEG).CreateDecoder()
+		if err != nil {
+			c.Close()
+			return nil, fmt.Errorf("create MJPEG decoder: %w", err)
+		}
+		r.mjpegDec = dec
+		r.isMJPEG = true
+	} else {
+		h264f := forma.(*format.H264)
+		dec, err := h264f.CreateDecoder()
+		if err != nil {
+			c.Close()
+			return nil, fmt.Errorf("create H.264 decoder: %w", err)
+		}
+		r.h264Dec = dec
+		r.gvDecoder = govidh264.NewDecoder()
 	}
 
 	if err := c.SetupAll(u, desc.Medias); err != nil {
+		c.Close()
 		return nil, fmt.Errorf("RTSP setup: %w", err)
 	}
 
-	type frameResult struct {
-		data []byte
-		err  error
-	}
-	frameCh := make(chan frameResult, 1)
-	received := make(chan struct{})
-
-	// MJPEG frames are fragmented across multiple RTP packets. Feed every
-	// packet to the decoder until it assembles one complete frame.
-	c.OnPacketRTP(media, f, func(pkt *rtp.Packet) {
-		select {
-		case <-received:
-			return
-		default:
-		}
-		jpegData, err := decoder.Decode(pkt)
-		if err != nil {
-			if errors.Is(err, rtpmjpeg.ErrMorePacketsNeeded) {
-				return // intermediate fragment, keep accumulating
-			}
-			close(received)
-			frameCh <- frameResult{err: fmt.Errorf("decode MJPEG RTP: %w", err)}
-			return
-		}
-		if jpegData == nil {
-			return
-		}
-		close(received)
-		frameCh <- frameResult{data: jpegData}
-	})
-
 	if _, err := c.Play(nil); err != nil {
+		c.Close()
 		return nil, fmt.Errorf("RTSP play: %w", err)
 	}
 
-	select {
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("RTSP timeout: no frame received within %v", timeout)
-	case res := <-frameCh:
-		if res.err != nil {
-			return nil, res.err
-		}
-		return decodeRGB(res.data)
-	}
+	return r, nil
 }
 
-func readRTSPFrameH264(c *gortsplib.Client, u *base.URL, desc *description.Session,
-	media *description.Media, f *format.H264, timeout time.Duration) (*rgbImage, error) {
-	depacketizer, err := f.CreateDecoder()
-	if err != nil {
-		return nil, fmt.Errorf("create H.264 depacketizer: %w", err)
-	}
-
-	if err := c.SetupAll(u, desc.Medias); err != nil {
-		return nil, fmt.Errorf("RTSP setup: %w", err)
-	}
-
-	// Pure-Go software decoder (github.com/liqmix/govid/h264). It expects
-	// length-prefixed AVC access units (4-byte big-endian NALU sizes), while
-	// gortsplib's rtph264.Decoder yields one NALU slice per element.
-	gv := govidh264.NewDecoder()
-
+// ReadFrame reads the next frame from the persistent RTSP connection.
+// Returns nil, nil when the connection is closed (context done).
+func (r *rtspReader) ReadFrame(ctx context.Context) (*rgbImage, error) {
 	type frameResult struct {
 		img *rgbImage
 		err error
@@ -152,55 +149,83 @@ func readRTSPFrameH264(c *gortsplib.Client, u *base.URL, desc *description.Sessi
 	frameCh := make(chan frameResult, 1)
 	received := make(chan struct{})
 
-	// H.264 access units (SPS/PPS/slices) are reassembled by the depacketizer;
-	// govid decodes the whole AU at once. The decoder is stateful across calls
-	// (keeps SPS/PPS and reference frames), so transient errors like a missing
-	// SPS on a mid-GOP join are expected and skipped — keep reading until a
-	// full frame is produced or the timeout fires.
-	c.OnPacketRTP(media, f, func(pkt *rtp.Packet) {
-		select {
-		case <-received:
-			return
-		default:
-		}
-		nalus, err := depacketizer.Decode(pkt)
-		if err != nil {
-			if errors.Is(err, rtph264.ErrMorePacketsNeeded) {
-				return // intermediate fragment, keep accumulating
+	if r.isMJPEG {
+		r.client.OnPacketRTP(r.media, r.format, func(pkt *rtp.Packet) {
+			select {
+			case <-received:
+				return
+			default:
 			}
-			return // ignore non-starting packets / transient depacketizer errors
-		}
-
-		avc := make([]byte, 0, 1024)
-		var lenBuf [4]byte
-		for _, nalu := range nalus {
-			binary.BigEndian.PutUint32(lenBuf[:], uint32(len(nalu)))
-			avc = append(avc, lenBuf[:]...)
-			avc = append(avc, nalu...)
-		}
-
-		frame, err := gv.DecodePacket(avc)
-		if err != nil {
-			return // e.g. slice before SPS/PPS on a mid-GOP join; keep reading
-		}
-		if frame == nil {
-			return // parameter sets only, no picture yet
-		}
-		close(received)
-		frameCh <- frameResult{img: imageToRGB(frame)}
-	})
-
-	if _, err := c.Play(nil); err != nil {
-		return nil, fmt.Errorf("RTSP play: %w", err)
+			data, err := r.mjpegDec.Decode(pkt)
+			if err != nil {
+				if errors.Is(err, rtpmjpeg.ErrMorePacketsNeeded) {
+					return
+				}
+				close(received)
+				frameCh <- frameResult{err: fmt.Errorf("decode MJPEG RTP: %w", err)}
+				return
+			}
+			if data == nil {
+				return
+			}
+			close(received)
+			frameCh <- frameResult{img: func() *rgbImage { im, _ := decodeRGB(data); return im }()}
+		})
+	} else {
+		r.client.OnPacketRTP(r.media, r.format, func(pkt *rtp.Packet) {
+			select {
+			case <-received:
+				return
+			default:
+			}
+			nalus, err := r.h264Dec.Decode(pkt)
+			if err != nil {
+				if errors.Is(err, rtph264.ErrMorePacketsNeeded) {
+					return
+				}
+				return
+			}
+			avc := make([]byte, 0, 1024)
+			var lenBuf [4]byte
+			for _, nalu := range nalus {
+				binary.BigEndian.PutUint32(lenBuf[:], uint32(len(nalu)))
+				avc = append(avc, lenBuf[:]...)
+				avc = append(avc, nalu...)
+			}
+			frame, err := r.gvDecoder.DecodePacket(avc)
+			if err != nil || frame == nil {
+				return
+			}
+			close(received)
+			frameCh <- frameResult{img: imageToRGB(frame)}
+		})
 	}
 
 	select {
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("RTSP timeout: no frame received within %v", timeout)
+	case <-ctx.Done():
+		return nil, nil
 	case res := <-frameCh:
 		if res.err != nil {
 			return nil, res.err
 		}
 		return res.img, nil
 	}
+}
+
+// Close closes the persistent RTSP connection.
+func (r *rtspReader) Close() {
+	r.client.Close()
+}
+
+// readRTSPFrame connects to an RTSP server, reads one decoded frame (MJPEG or
+// H.264) within the timeout, and returns it as an rgbImage. If the stream uses
+// any other codec, it returns a descriptive error without reading any frames.
+// Kept for backward compatibility with tests.
+func readRTSPFrame(url string, timeout time.Duration) (*rgbImage, error) {
+	reader, err := newRTSPReader(url, timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return reader.ReadFrame(context.Background())
 }

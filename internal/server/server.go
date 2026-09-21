@@ -707,46 +707,18 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 	// Each frame is checked for faces and matched against enrolled users.
 	// Returns on first match above threshold, or "not ok" after timeout.
 	const streamTimeout = 10 * time.Second
-	const frameReadTimeout = 3 * time.Second
 
 	connCtx, connCancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer connCancel()
 
-	type frameResult struct {
-		img *rgbImage
-		err error
+	reader, err := newRTSPReader(rtspURL, streamTimeout)
+	if err != nil {
+		return StreamCheckResponse{
+			Status: "not ok",
+			Reason: err.Error(),
+		}, err
 	}
-	frameCh := make(chan frameResult, 1)
-
-	// Start a goroutine that reads frames from the RTSP stream.
-	// Keeps trying until the stream timeout expires or a connection error occurs.
-	go func() {
-		for {
-			select {
-			case <-connCtx.Done():
-				return
-			default:
-			}
-			img, err := readRTSPFrame(rtspURL, frameReadTimeout)
-			if err != nil {
-				// Only propagate connection-level errors (codec, URL parse).
-				// Timeout/no-frame errors are non-fatal — keep trying.
-				if strings.Contains(err.Error(), "codec") || strings.Contains(err.Error(), "invalid RTSP") {
-					select {
-					case frameCh <- frameResult{err: err}:
-					default:
-					}
-					return
-				}
-				// Transient error (timeout, no frame) — retry.
-				continue
-			}
-			select {
-			case frameCh <- frameResult{img: img}:
-			default:
-			}
-		}
-	}()
+	defer reader.Close()
 
 	var lastFaceImage string
 	var lastScore float32
@@ -756,83 +728,88 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 		select {
 		case <-connCtx.Done():
 			goto done
-		case res := <-frameCh:
-			if res.err != nil {
-				reason := "Failed to read RTSP stream"
-				if strings.Contains(res.err.Error(), "codec") {
-					reason = res.err.Error()
-				}
-				return StreamCheckResponse{
-					Status:     "not ok",
-					Reason:     reason,
-					Similarity: lastScore,
-					Name:       lastMatch,
-					Matched:    lastScore >= s.threshold,
-					FaceImage:  lastFaceImage,
-					OperationDuration: OperationDuration{
-						DurationMs: time.Since(start).Milliseconds(),
-					},
-				}, res.err
-			}
+		default:
+		}
 
-			cropped, _, err := s.detectAndCrop112(res.img)
-			if err != nil {
-				continue // no face on this frame, try next
+		img, err := reader.ReadFrame(connCtx)
+		if err != nil {
+			reason := "Failed to read RTSP stream"
+			if strings.Contains(err.Error(), "codec") {
+				reason = err.Error()
 			}
+			return StreamCheckResponse{
+				Status:     "not ok",
+				Reason:     reason,
+				Similarity: lastScore,
+				Name:       lastMatch,
+				Matched:    lastScore >= s.threshold,
+				FaceImage:  lastFaceImage,
+				OperationDuration: OperationDuration{
+					DurationMs: time.Since(start).Milliseconds(),
+				},
+			}, err
+		}
+		if img == nil {
+			goto done
+		}
 
-			queryVec, err := s.extractEmbedding(cropped)
-			if err != nil {
-				continue // embedding failed, try next frame
-			}
+		cropped, _, err := s.detectAndCrop112(img)
+		if err != nil {
+			continue // no face on this frame, try next
+		}
 
-			faceImage, imgErr := encodeFaceToBase64(cropped)
-			if imgErr != nil {
-				s.log.Error().Err(imgErr).Msg("failed to encode face image")
-			}
+		queryVec, err := s.extractEmbedding(cropped)
+		if err != nil {
+			continue // embedding failed, try next frame
+		}
 
-			s.mu.RLock()
-			var bestMatch string
-			var highestScore float32 = -1.0
-			for name, user := range s.dbMap {
-				score := bestEmbeddingScore(queryVec, user.Embeddings)
-				if score > highestScore {
-					highestScore = score
-					bestMatch = name
-				}
-			}
-			s.mu.RUnlock()
+		faceImage, imgErr := encodeFaceToBase64(cropped)
+		if imgErr != nil {
+			s.log.Error().Err(imgErr).Msg("failed to encode face image")
+		}
 
-			// Track the best result seen so far.
-			if highestScore > lastScore {
-				lastScore = highestScore
-				lastMatch = bestMatch
-				lastFaceImage = faceImage
+		s.mu.RLock()
+		var bestMatch string
+		var highestScore float32 = -1.0
+		for name, user := range s.dbMap {
+			score := bestEmbeddingScore(queryVec, user.Embeddings)
+			if score > highestScore {
+				highestScore = score
+				bestMatch = name
 			}
+		}
+		s.mu.RUnlock()
 
-			// If we have a match above threshold, return immediately.
-			if highestScore >= s.threshold {
-				dur := OperationDuration{DurationMs: time.Since(start).Milliseconds()}
-				auditEntry := AuditEntry{
-					Time:       time.Now(),
-					Endpoint:   "stream-check",
-					Name:       bestMatch,
-					Similarity: highestScore,
-					Matched:    true,
-					DurationMs: dur.DurationMs,
-					FaceImage:  faceImage,
-				}
-				if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
-					s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
-				}
-				return StreamCheckResponse{
-					OperationDuration: dur,
-					Status:            "ok",
-					Name:              bestMatch,
-					Similarity:        highestScore,
-					Matched:           true,
-					FaceImage:         faceImage,
-				}, nil
+		// Track the best result seen so far.
+		if highestScore > lastScore {
+			lastScore = highestScore
+			lastMatch = bestMatch
+			lastFaceImage = faceImage
+		}
+
+		// If we have a match above threshold, return immediately.
+		if highestScore >= s.threshold {
+			dur := OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+			auditEntry := AuditEntry{
+				Time:       time.Now(),
+				Endpoint:   "stream-check",
+				Name:       bestMatch,
+				Similarity: highestScore,
+				Matched:    true,
+				DurationMs: dur.DurationMs,
+				FaceImage:  faceImage,
 			}
+			if err := s.storeAudit([]AuditEntry{auditEntry}); err != nil {
+				s.log.Error().Err(err).Msg("failed to write stream-check audit entry")
+			}
+			return StreamCheckResponse{
+				OperationDuration: dur,
+				Status:            "ok",
+				Name:              bestMatch,
+				Similarity:        highestScore,
+				Matched:           true,
+				FaceImage:         faceImage,
+			}, nil
 		}
 	}
 
