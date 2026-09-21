@@ -707,7 +707,7 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 	// Each frame is checked for faces and matched against enrolled users.
 	// Returns on first match above threshold, or "not ok" after timeout.
 	const streamTimeout = 10 * time.Second
-	const frameInterval = 500 * time.Millisecond
+	const frameReadTimeout = 3 * time.Second
 
 	connCtx, connCancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer connCancel()
@@ -719,6 +719,7 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 	frameCh := make(chan frameResult, 1)
 
 	// Start a goroutine that reads frames from the RTSP stream.
+	// Keeps trying until the stream timeout expires or a connection error occurs.
 	go func() {
 		for {
 			select {
@@ -726,13 +727,19 @@ func (s *FaceServer) RunStreamCheck(rtspURL string) (StreamCheckResponse, error)
 				return
 			default:
 			}
-			img, err := readRTSPFrame(rtspURL, frameInterval)
+			img, err := readRTSPFrame(rtspURL, frameReadTimeout)
 			if err != nil {
-				select {
-				case frameCh <- frameResult{err: err}:
-				default:
+				// Only propagate connection-level errors (codec, URL parse).
+				// Timeout/no-frame errors are non-fatal — keep trying.
+				if strings.Contains(err.Error(), "codec") || strings.Contains(err.Error(), "invalid RTSP") {
+					select {
+					case frameCh <- frameResult{err: err}:
+					default:
+					}
+					return
 				}
-				return
+				// Transient error (timeout, no frame) — retry.
+				continue
 			}
 			select {
 			case frameCh <- frameResult{img: img}:
