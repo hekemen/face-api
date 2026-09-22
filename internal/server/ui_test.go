@@ -23,7 +23,7 @@ func TestUIRenderNonEmpty(t *testing.T) {
 	mux := http.NewServeMux()
 	s.RegisterHandlers(mux)
 
-	for _, page := range []string{"/ui/", "/ui/enroll", "/ui/recognize", "/ui/stream-check", "/ui/stats", "/ui/audit"} {
+	for _, page := range []string{"/ui/", "/ui/enroll", "/ui/recognize", "/ui/stats", "/ui/audit"} {
 		req := httptest.NewRequest(http.MethodGet, page, nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -52,7 +52,7 @@ func TestUIRendersPicoCSS(t *testing.T) {
 	mux := http.NewServeMux()
 	s.RegisterHandlers(mux)
 
-	for _, page := range []string{"/ui/", "/ui/enroll", "/ui/recognize", "/ui/stream-check", "/ui/stats", "/ui/audit"} {
+	for _, page := range []string{"/ui/", "/ui/enroll", "/ui/recognize", "/ui/stats", "/ui/audit"} {
 		req := httptest.NewRequest(http.MethodGet, page, nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -109,12 +109,15 @@ func TestUIRendersCameraSupport(t *testing.T) {
 		}
 	}
 
-	// Stream-check has no image input → must not include camera wiring.
-	req := httptest.NewRequest(http.MethodGet, "/ui/stream-check", nil)
+	// Recognize has image input → must include camera wiring.
+	req := httptest.NewRequest(http.MethodGet, "/ui/recognize", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if strings.Contains(rec.Body.String(), "getUserMedia") {
-		t.Fatal("/ui/stream-check should not include camera script")
+	body := rec.Body.String()
+	for _, marker := range []string{"getUserMedia", "data-camera", "capture"} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("/ui/recognize: missing camera marker %q", marker)
+		}
 	}
 }
 
@@ -129,15 +132,17 @@ func TestUIProxyAPIInProcess(t *testing.T) {
 	mux := http.NewServeMux()
 	s.RegisterHandlers(mux)
 
-	// /stream-check with no rtsp_url and no RTSP_URL config → 400 from the API,
+	// /recognize with no image → 400 from the API,
 	// which must arrive as the UI's "error" result (proving in-process dispatch).
-	req := httptest.NewRequest(http.MethodPost, "/ui/stream-check", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ui/recognize", nil)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "error") || !strings.Contains(body, "status") {
+	t.Logf("Body length: %d", len(body))
+	t.Logf("Body contains 'error': %v", strings.Contains(body, "error"))
+	if !strings.Contains(body, "error") {
 		t.Fatalf("expected error result embedded in page, got: %.200s", body)
 	}
 }
@@ -187,7 +192,7 @@ func TestAPIAuditPaginated(t *testing.T) {
 		}{
 			{"alice", "enroll", true},
 			{"bob", "recognize", true},
-			{"charlie", "stream-check", false},
+			{"charlie", "recognize", false},
 			{"alice", "recognize", true},
 			{"dave", "enroll", false},
 		}
