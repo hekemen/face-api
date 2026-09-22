@@ -1,27 +1,10 @@
 {{template "head" .}}
 {{template "dashHeader" .}}
 <div class="dashboard">
-  <!-- Enroll Face -->
+  <!-- Enroll / Users -->
   <a href="enroll" class="dash-card">
     <div class="dash-card-title">Enroll Face</div>
-    <div class="dash-card-desc">Register a new face with a name and photo</div>
-  </a>
-
-  <!-- Recognize -->
-  <a href="recognize" class="dash-card">
-    <div class="dash-card-title">Recognize</div>
-    <div class="dash-card-desc">Identify a face from enrolled users</div>
-  </a>
-
-  <!-- Stream Check -->
-  <a href="stream-check" class="dash-card">
-    <div class="dash-card-title">Stream Check</div>
-    <div class="dash-card-desc">Check an RTSP stream for recognized faces</div>
-  </a>
-
-  <!-- Users -->
-  <a href="enroll" class="dash-card">
-    <div class="dash-card-title">Users</div>
+    <div class="dash-card-desc">Register a new face with a photo or RTSP stream</div>
     <div class="dash-card-data">
       {{if .DashUsers}}
         <div class="stat-big">{{len .DashUsers}}</div>
@@ -33,6 +16,12 @@
         <div class="stat-label">No users enrolled yet</div>
       {{end}}
     </div>
+  </a>
+
+  <!-- Recognize / Stream Check -->
+  <a href="recognize" class="dash-card">
+    <div class="dash-card-title">Recognize</div>
+    <div class="dash-card-desc">Identify a face from an image or live RTSP stream</div>
   </a>
 
   <!-- Statistics -->
