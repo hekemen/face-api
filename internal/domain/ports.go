@@ -93,7 +93,13 @@ type FaceService interface {
 	// RecognizeImage recognizes a face from an image upload.
 	RecognizeImage(imageData []byte) (*RecognitionResult, error)
 	// CheckStream reads a single RTSP frame, detects a face, and matches it.
+	// The caller (HTTP handler / MQTT bridge) is responsible for reading the
+	// frame from RTSP; use CheckStreamImage to pass pre-read image data.
 	CheckStream(rtspURL string) (*StreamCheckResult, error)
+	// CheckStreamImage runs face detection and recognition on image data
+	// captured from an RTSP stream. Handles detection, recognition, and
+	// auto-collection of unmatched faces.
+	CheckStreamImage(imageData []byte) (*StreamCheckResult, error)
 	// CollectStreamCandidate stores an unmatched face from a stream as a candidate.
 	CollectStreamCandidate(c *Candidate) error
 	// ListUsers returns all enrolled users.
