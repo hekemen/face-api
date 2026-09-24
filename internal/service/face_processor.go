@@ -280,6 +280,23 @@ func (p *FaceProcessorImpl) runRecognize(blob []float32) (domain.FaceEmbedding, 
 	return domain.FaceEmbedding(data), nil
 }
 
+// ExtractEmbedding extracts a face embedding from a FaceCrop.
+// If the crop already contains an embedding, it is returned directly.
+// Otherwise the JPEG data is decoded and recognition is run.
+func (p *FaceProcessorImpl) ExtractEmbedding(crop *domain.FaceCrop) (domain.FaceEmbedding, error) {
+	if crop != nil && len(crop.Embedding) > 0 {
+		return crop.Embedding, nil
+	}
+	if crop == nil {
+		return nil, fmt.Errorf("crop is nil")
+	}
+	img, err := decodeRGB(crop.Data)
+	if err != nil {
+		return nil, fmt.Errorf("decode crop: %w", err)
+	}
+	return p.extractEmbedding(img)
+}
+
 // --- Image helpers (extracted from internal/server/img.go) ---
 
 // rgbImage is a packed 8-bit RGB (3 bytes per pixel, row-major) image.
