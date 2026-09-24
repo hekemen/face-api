@@ -74,3 +74,37 @@ type StatsResponse struct {
 	TotalNotMatched int     `json:"total_not_matched"`
 	LastMatched     *string `json:"last_matched"`
 }
+
+// Candidate represents an unknown face collected from an RTSP stream.
+type Candidate struct {
+	ID        string    `json:"id"`
+	Embedding []float32 `json:"embedding"`
+	FaceImage string    `json:"face_image"`
+	Time      time.Time `json:"time"`
+	StreamURL string    `json:"stream_url,omitempty"`
+}
+
+// CandidateGroup is a computed grouping of similar candidates.
+type CandidateGroup struct {
+	ID               string     `json:"id"`
+	FaceCount        int        `json:"face_count"`
+	BestSimilarity   float32    `json:"best_similarity"`
+	Faces            []Candidate `json:"faces"`
+}
+
+// CandidatesListResponse is returned by GET /candidates.
+type CandidatesListResponse struct {
+	OperationDuration `json:",inline"`
+	Groups            []*CandidateGroup `json:"groups"`
+}
+
+// PromoteCandidateRequest is the body for POST /candidates/:id/promote.
+type PromoteCandidateRequest struct {
+	Name string `json:"name"`
+}
+
+// BulkPromoteRequest is the body for POST /candidates/bulk-promote.
+type BulkPromoteRequest struct {
+	Name        string   `json:"name"`
+	CandidateIDs []string `json:"candidate_ids"`
+}

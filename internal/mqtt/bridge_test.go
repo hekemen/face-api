@@ -18,7 +18,7 @@ func TestBridgeDisabledWhenNoBroker(t *testing.T) {
 	}
 	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
 		return server.StreamCheckResponse{Status: "ok"}, nil
-	})
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestBridgeDefaults(t *testing.T) {
 	}
 	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
 		return server.StreamCheckResponse{Status: "ok"}, nil
-	})
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestBridgeQueueDrop(t *testing.T) {
 	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
 		callCount++
 		return server.StreamCheckResponse{Status: "ok"}, nil
-	})
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

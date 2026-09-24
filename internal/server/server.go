@@ -18,17 +18,21 @@ import (
 )
 
 var (
-	bucketName      = []byte("Faces")
-	auditBucketName = []byte("Audit")
+	bucketName        = []byte("Faces")
+	auditBucketName   = []byte("Audit")
+	candidateBucketName = []byte("Candidates")
 )
 
-// EnsureBucket creates the faces and audit buckets if they do not exist.
+// EnsureBucket creates the faces, audit, and candidates buckets if they do not exist.
 func EnsureBucket(db *bolt.DB) error {
 	return db.Update(func(tx *bolt.Tx) error {
 		if _, err := tx.CreateBucketIfNotExists(bucketName); err != nil {
 			return err
 		}
-		_, err := tx.CreateBucketIfNotExists(auditBucketName)
+		if _, err := tx.CreateBucketIfNotExists(auditBucketName); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(candidateBucketName)
 		return err
 	})
 }
@@ -331,6 +335,299 @@ func NewFaceServer(db *bolt.DB, log zerolog.Logger, rt *ort.Runtime, env *ort.En
 	}, nil
 }
 
+// storeCandidate writes a candidate to the Candidates bbolt bucket.
+func (s *FaceServer) storeCandidate(c *Candidate) error {
+	return s.boltDB.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(candidateBucketName)
+		if err != nil {
+			return err
+		}
+		val, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(c.ID), val)
+	})
+}
+
+// readCandidates returns all candidates from the Candidates bucket.
+func (s *FaceServer) readCandidates() ([]*Candidate, error) {
+	var candidates []*Candidate
+	err := s.boltDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(candidateBucketName)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			var c Candidate
+			if err := json.Unmarshal(v, &c); err != nil {
+				return nil
+			}
+			candidates = append(candidates, &c)
+			return nil
+		})
+	})
+	return candidates, err
+}
+
+
+// groupCandidates groups candidates by pairwise cosine similarity >= threshold.
+// Returns a list of groups. Each candidate belongs to at most one group.
+func (s *FaceServer) groupCandidates(candidates []*Candidate, threshold float32) ([]*CandidateGroup, error) {
+	if threshold <= 0 {
+		threshold = 0.45
+	}
+	n := len(candidates)
+	assigned := make([]bool, n)
+	var groups []*CandidateGroup
+
+	for i := 0; i < n; i++ {
+		if assigned[i] {
+			continue
+		}
+		g := &CandidateGroup{Faces: []Candidate{*candidates[i]}}
+		assigned[i] = true
+		for j := i + 1; j < n; j++ {
+			if assigned[j] {
+				continue
+			}
+			for _, fg := range g.Faces {
+				if cosineSimilarity(candidates[j].Embedding, fg.Embedding) >= threshold {
+					g.Faces = append(g.Faces, *candidates[j])
+					assigned[j] = true
+					break
+				}
+			}
+		}
+		var bestSim float32
+		for a := 0; a < len(g.Faces); a++ {
+			for b := a + 1; b < len(g.Faces); b++ {
+				sim := cosineSimilarity(g.Faces[a].Embedding, g.Faces[b].Embedding)
+				if sim > bestSim {
+					bestSim = sim
+				}
+			}
+		}
+		g.FaceCount = len(g.Faces)
+		g.BestSimilarity = bestSim
+		g.ID = generateGroupID(g.Faces)
+		groups = append(groups, g)
+	}
+	return groups, nil
+}
+
+// generateGroupID creates a simple group ID from the first face's timestamp.
+func generateGroupID(faces []Candidate) string {
+	if len(faces) == 0 {
+		return ""
+	}
+	return faces[0].Time.Format("20060102150405")
+}
+
+// promoteCandidateToUser copies the best face from a candidate group to enrolled users.
+// It finds the candidate group containing candidateID, picks the face with highest
+// similarity to the group centroid, and enrolls it as a new user with the given name.
+// Returns 409 if name already exists, 404 if candidate not found.
+func (s *FaceServer) promoteCandidateToUser(candidateID, name string) (int, error) {
+	// Check if user already exists
+	s.mu.RLock()
+	_, exists := s.dbMap[name]
+	s.mu.RUnlock()
+	if exists {
+		return http.StatusConflict, fmt.Errorf("user %q already exists", name)
+	}
+
+	// Find the candidate
+	candidates, err := s.readCandidates()
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+
+	var target *Candidate
+	for _, c := range candidates {
+		if c.ID == candidateID {
+			target = c
+		}
+	}
+	if target == nil {
+		return http.StatusNotFound, fmt.Errorf("candidate %q not found", candidateID)
+	}
+
+	// Find all candidates in the same group
+	var group []*Candidate
+	for _, c := range candidates {
+		if cosineSimilarity(target.Embedding, c.Embedding) >= 0.45 {
+			group = append(group, c)
+		}
+	}
+
+	// Find the face most similar to the group centroid
+	var centroid []float32
+	for _, c := range group {
+		for i, v := range c.Embedding {
+			if len(centroid) == 0 {
+				centroid = make([]float32, len(c.Embedding))
+			}
+			centroid[i] += v
+		}
+	}
+	for i := range centroid {
+		centroid[i] /= float32(len(group))
+	}
+
+	bestIdx := 0
+	bestScore := float32(-1)
+	for i, c := range group {
+		sim := cosineSimilarity(c.Embedding, centroid)
+		if sim > bestScore {
+			bestScore = sim
+			bestIdx = i
+		}
+	}
+
+	best := group[bestIdx]
+
+	// Create the user
+	now := time.Now()
+	user := &storedUser{
+		Embeddings: [][]float32{best.Embedding},
+		Pictures:   []string{best.FaceImage},
+		UpdatedAt:  now,
+	}
+
+	err = s.boltDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		return b.Put([]byte(name), marshalUser(user))
+	})
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+
+	s.mu.Lock()
+	s.dbMap[name] = user
+	s.mu.Unlock()
+
+	// Delete all candidates in the group
+	err = s.boltDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(candidateBucketName)
+		if b == nil {
+			return nil
+		}
+		for _, c := range group {
+			if err := b.Delete([]byte(c.ID)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		s.log.Error().Err(err).Str("name", name).Msg("failed to delete promoted candidates")
+	}
+
+	return http.StatusCreated, nil
+}
+
+// bulkPromoteCandidates creates a user from the given candidate IDs.
+// All selected candidates are grouped by pairwise similarity, each group
+// contributes its embeddings to the user, and the used candidates are deleted.
+func (s *FaceServer) bulkPromoteCandidates(name string, candidateIDs []string) error {
+	if name == "" || len(candidateIDs) == 0 {
+		return fmt.Errorf("name and candidate IDs are required")
+	}
+
+	// Check if user already exists
+	s.mu.RLock()
+	_, exists := s.dbMap[name]
+	s.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("user %q already exists", name)
+	}
+
+	// Load selected candidates
+	selected := make(map[string]*Candidate)
+	for _, id := range candidateIDs {
+		var c *Candidate
+		err := s.boltDB.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket(candidateBucketName)
+			if b == nil {
+				return nil
+			}
+			val := b.Get([]byte(id))
+			if val == nil {
+				return nil
+			}
+			var cand Candidate
+			if err := json.Unmarshal(val, &cand); err != nil {
+				return nil
+			}
+			c = &cand
+			return nil
+		})
+		if err != nil || c == nil {
+			continue // skip missing candidates
+		}
+		selected[id] = c
+	}
+
+	if len(selected) == 0 {
+		return fmt.Errorf("no valid candidates found")
+	}
+
+	// Group selected candidates by similarity and collect embeddings
+	allEmbeddings := make([][]float32, 0, len(selected))
+	for _, c := range selected {
+		allEmbeddings = append(allEmbeddings, c.Embedding)
+	}
+
+	// Sort embeddings by index for deterministic ordering
+	sorted := make([]int, 0, len(allEmbeddings))
+	for i := range allEmbeddings {
+		sorted = append(sorted, i)
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		if len(allEmbeddings[a]) != len(allEmbeddings[b]) {
+			return len(allEmbeddings[a]) < len(allEmbeddings[b])
+		}
+		return a < b
+	})
+
+	// Delete the promoted candidates from bbolt
+	err := s.boltDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(candidateBucketName)
+		if b == nil {
+			return nil
+		}
+		for _, id := range candidateIDs {
+			if err := b.Delete([]byte(id)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Store the new user with all embeddings
+	embeddings := make([][]float32, len(allEmbeddings))
+	for i, idx := range sorted {
+		embeddings[i] = allEmbeddings[idx]
+	}
+
+	s.mu.Lock()
+	if _, exists := s.dbMap[name]; !exists {
+		s.dbMap[name] = &storedUser{
+			Embeddings: embeddings,
+			Pictures:   []string{},
+			UpdatedAt:  time.Now(),
+		}
+	}
+	s.mu.Unlock()
+
+	return nil
+}
+
 // RegisterHandlers attaches all FaceServer HTTP handlers to the given mux.
 func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
 	s.mux = mux
@@ -344,6 +641,14 @@ func (s *FaceServer) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/stats", s.handleListStats)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
+
+	// Candidate collection endpoints
+	mux.HandleFunc("/candidates", s.handleListCandidates)
+	mux.HandleFunc("/candidates/promote", s.handlePromoteCandidate)
+	mux.HandleFunc("/candidates/bulk-promote", s.handleBulkPromoteCandidates)
+	mux.HandleFunc("/collector/start", s.handleCollectorStart)
+	mux.HandleFunc("/collector/stop", s.handleCollectorStop)
+	mux.HandleFunc("/collector/status", s.handleCollectorStatus)
 
 	if s.enableUI {
 		s.RegisterUIHandlers(mux)
@@ -934,4 +1239,186 @@ func (s *FaceServer) deleteUser(name string) {
 	s.mu.Lock()
 	delete(s.dbMap, name)
 	s.mu.Unlock()
+}
+
+// HandleMQTTCollect handles MQTT collect commands: "collect" starts, "stop" stops.
+func (s *FaceServer) HandleMQTTCollect(payload string) error {
+	switch payload {
+	case "start":
+		s.log.Info().Msg("MQTT collect started")
+		return s.startCollector("")
+	case "stop":
+		s.log.Info().Msg("MQTT collect stopped")
+		s.stopCollector()
+		return nil
+	case "PRESS":
+		// Backward compatibility with old HA discovery config (payload_press).
+		s.log.Info().Msg("MQTT collect started (legacy PRESS)")
+		return s.startCollector("")
+	default:
+		return fmt.Errorf("unknown collect command: %q", payload)
+	}
+}
+
+// --- Candidate collection stub handlers ---
+
+func (s *FaceServer) handleListCandidates(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
+
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+
+	candidates, err := s.readCandidates()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read candidates"})
+		return
+	}
+
+	groups, err := s.groupCandidates(candidates, 0.45)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to group candidates"})
+		return
+	}
+
+	if groups == nil {
+		groups = []*CandidateGroup{}
+	}
+
+	json.NewEncoder(w).Encode(CandidatesListResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Groups:            groups,
+	})
+}
+
+func (s *FaceServer) handlePromoteCandidate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	var req PromoteCandidateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+	if req.Name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing 'name' field"})
+		return
+	}
+
+	// Find the candidate ID from the URL path: /candidates/promote?id=xxx
+	candidateID := r.URL.Query().Get("id")
+	if candidateID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing 'id' query parameter"})
+		return
+	}
+
+	status, err := s.promoteCandidateToUser(candidateID, req.Name)
+	if err != nil {
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(EnrolledResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Status:            "promoted",
+		Name:              req.Name,
+	})
+}
+
+func (s *FaceServer) handleBulkPromoteCandidates(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	start := time.Now()
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	var req BulkPromoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+	if req.Name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing 'name' field"})
+		return
+	}
+	if len(req.CandidateIDs) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing 'candidate_ids' field"})
+		return
+	}
+
+	if err := s.bulkPromoteCandidates(req.Name, req.CandidateIDs); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(EnrolledResponse{
+		OperationDuration: OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Status:            "bulk-promoted",
+		Name:              req.Name,
+	})
+}
+
+func (s *FaceServer) handleCollectorStart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	rtspURL := r.FormValue("rtsp_url")
+	if err := s.startCollector(rtspURL); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "collector started"})
+}
+
+func (s *FaceServer) handleCollectorStop(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	s.stopCollector()
+	json.NewEncoder(w).Encode(map[string]string{"status": "collector stopped"})
+}
+
+func (s *FaceServer) handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]bool{"collecting": s.IsCollectorRunning()})
 }

@@ -85,8 +85,16 @@ func main() {
 
 	enableUI := os.Getenv("ENABLE_UI") == "true"
 
+	// Similarity threshold for face matching (default: 0.45)
+	threshold := float32(0.45)
+	if t := os.Getenv("THRESHOLD"); t != "" {
+		if v, err := strconv.ParseFloat(t, 32); err == nil && v >= 0 && v <= 1 {
+			threshold = float32(v)
+		}
+	}
+
 	// 3. Create server and register handlers
-	srv, err := server.NewFaceServer(kvDB, logger, rt, ortEnv, detSess, recSess, 0.45, os.Getenv("RTSP_URL"), enableUI)
+	srv, err := server.NewFaceServer(kvDB, logger, rt, ortEnv, detSess, recSess, threshold, os.Getenv("RTSP_URL"), enableUI)
 	if err != nil {
 		log.Fatalf("Failed to create face server: %v", err)
 	}
@@ -110,7 +118,7 @@ func main() {
 			QueueDepth:      queueDepth,
 			DiscoveryPrefix: "homeassistant",
 		}
-		mqttBridge, err = mqtt.New(mqttCfg, srv.RunStreamCheck)
+		mqttBridge, err = mqtt.New(mqttCfg, srv.RunStreamCheck, srv.HandleMQTTCollect, srv.IsCollectorRunning)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
 		}

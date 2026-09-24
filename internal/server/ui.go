@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -21,17 +22,23 @@ var templateFS embed.FS
 
 // UIPage holds data passed to UI templates.
 type UIPage struct {
-	Result       string
-	Class        string
-	Users        []UserInfo
-	Entries      []AuditEntry
-	Count        int
-	Stats        *StatsResponse
-	DashUsers    []UserInfo
-	DashStats    *StatsResponse
-	DashAudit    []AuditEntry
-	GitVersion   string
-	GitHubURL    string
+	Result             string
+	Class              string
+	Users              []UserInfo
+	Entries            []AuditEntry
+	Count              int
+	Stats              *StatsResponse
+	DashUsers          []UserInfo
+	DashStats          *StatsResponse
+	DashAudit          []AuditEntry   `json:"dash_audit"`
+	DashCandidates     int            `json:"dash_candidates"`
+	DashGroups         int            `json:"dash_groups"`
+	Candidates         []*CandidateGroup `json:"candidates"`
+	AllCandidates      []*Candidate      `json:"all_candidates"`
+	CollectorRunning   bool           `json:"collector_running"`
+	CollectorStartedAt time.Time      `json:"collector_started_at"`
+	GitVersion         string
+	GitHubURL          string
 }
 
 // RegisterUIHandlers attaches the /ui web interface handlers to the given mux.
@@ -127,6 +134,14 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 			page.DashAudit = entries
 		}
 
+		// Fetch candidates count for dashboard.
+		candidates, err := s.readCandidates()
+		if err == nil {
+			groups, _ := s.groupCandidates(candidates, 0.45)
+			page.DashCandidates = len(candidates)
+			page.DashGroups = len(groups)
+		}
+
 		s.renderTemplate(w, "index.html", page)
 		return
 	}
@@ -142,6 +157,8 @@ func (s *FaceServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		s.handleUIAudit(w, r)
 	case "stats":
 		s.handleUIStats(w, r)
+	case "candidates":
+		s.handleUICandidates(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -382,4 +399,56 @@ func (s *FaceServer) handleUIStats(w http.ResponseWriter, r *http.Request) {
 		LastMatched:     lastMatchedStr,
 	}
 	s.renderTemplate(w, "stats.html", UIPage{Stats: stats})
+}
+
+func (s *FaceServer) handleUICandidates(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		candidates, err := s.readCandidates()
+		if err != nil {
+			s.renderTemplate(w, "candidates.html", UIPage{Result: "Failed to read candidates", Class: "error"})
+			return
+		}
+
+		groups, err := s.groupCandidates(candidates, 0.45)
+		if err != nil {
+			s.renderTemplate(w, "candidates.html", UIPage{Result: "Failed to group candidates", Class: "error"})
+			return
+		}
+
+		s.renderTemplate(w, "candidates.html", UIPage{
+			Candidates:         groups,
+			AllCandidates:      candidates,
+			CollectorRunning:   s.IsCollectorRunning(),
+			CollectorStartedAt: s.CollectorStartedAt(),
+		})
+		return
+	}
+
+	// Handle promote form submission
+	name := r.FormValue("name")
+	id := r.FormValue("id")
+	if name == "" || id == "" {
+		s.renderTemplate(w, "candidates.html", UIPage{Result: "Missing name or candidate ID", Class: "error"})
+		return
+	}
+
+	// Proxy to the promote API
+	result, class := s.proxyAPI(w, r, "/candidates/promote?id="+url.QueryEscape(id))
+	page := UIPage{Result: result, Class: class}
+	if class == "" {
+		var resp EnrolledResponse
+		if err := json.Unmarshal([]byte(result), &resp); err == nil {
+			page.Result = fmt.Sprintf("Promoted: %s (%.0fms)", resp.Name, float64(resp.DurationMs))
+		}
+	}
+
+	// Re-fetch candidates
+	candidates, _ := s.readCandidates()
+	groups, _ := s.groupCandidates(candidates, 0.45)
+	page.Candidates = groups
+	page.AllCandidates = candidates
+	page.CollectorRunning = s.IsCollectorRunning()
+	page.CollectorStartedAt = s.CollectorStartedAt()
+
+	s.renderTemplate(w, "candidates.html", page)
 }
