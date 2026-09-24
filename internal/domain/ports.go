@@ -78,6 +78,11 @@ type FaceProcessor interface {
 	ExtractEmbedding(crop *FaceCrop) (FaceEmbedding, error)
 }
 
+// RTSPReader reads one frame from an RTSP stream as JPEG bytes.
+type RTSPReader interface {
+	ReadFrame(url string, timeout time.Duration) ([]byte, error)
+}
+
 // FaceCrop holds the result of face detection/cropping.
 type FaceCrop struct {
 	Data      []byte // raw JPEG bytes of the 112×112 crop

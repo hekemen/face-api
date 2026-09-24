@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ type FaceServiceImpl struct {
 	candidates  domain.CandidateRepository
 	audit       domain.AuditRepository
 	processor   domain.FaceProcessor
+	rtspReader  domain.RTSPReader
 	threshold   float32
 	mu          sync.Mutex
 }
@@ -31,6 +33,33 @@ func New(users domain.UserRepository, candidates domain.CandidateRepository,
 		processor:  processor,
 		threshold:  threshold,
 	}
+}
+
+// WithRTSPReader sets the RTSP reader for stream-based operations.
+func (s *FaceServiceImpl) WithRTSPReader(r domain.RTSPReader) *FaceServiceImpl {
+	s.rtspReader = r
+	return s
+}
+
+// --- CheckStream (URL-based, uses injected RTSP reader) ---
+
+func (s *FaceServiceImpl) CheckStream(rtspURL string) (*domain.StreamCheckResult, error) {
+	if s.rtspReader == nil {
+		return nil, fmt.Errorf("RTSP reader not configured")
+	}
+	imageData, err := s.rtspReader.ReadFrame(rtspURL, 3*time.Second)
+	if err != nil {
+		reason := "Failed to connect to RTSP stream"
+		if isNoFaceError(err) {
+			reason = "No face detected within 3 seconds"
+		}
+		return &domain.StreamCheckResult{
+			OperationDuration: domain.OperationDuration{DurationMs: 0},
+			Status:            "not ok",
+			Reason:            reason,
+		}, nil
+	}
+	return s.CheckStreamImage(imageData)
 }
 
 // --- Enroll ---
@@ -433,9 +462,16 @@ func (s *FaceServiceImpl) ComputeStats() (domain.Stats, error) {
 // isConnectionError checks if an error is likely a connection issue.
 func isConnectionError(err error) bool {
 	e := err.Error()
-	return len(e) == 0 || 
+	return len(e) == 0 ||
 		bytes.Contains([]byte(e), []byte("connection")) ||
 		bytes.Contains([]byte(e), []byte("refused")) ||
 		bytes.Contains([]byte(e), []byte("timeout")) ||
 		bytes.Contains([]byte(e), []byte("dial"))
+}
+
+// isNoFaceError checks if an error indicates no face was detected.
+func isNoFaceError(err error) bool {
+	e := err.Error()
+	return strings.Contains(e, "no face detected") ||
+		strings.Contains(e, "No face detected")
 }
