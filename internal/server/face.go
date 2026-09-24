@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
@@ -57,6 +58,12 @@ type FaceServer struct {
 	rtspURL   string  // Default RTSP stream URL, used when the request omits rtsp_url
 	enableUI  bool    // Whether to serve the /ui web interface
 	mux       *http.ServeMux
+
+	collecting       bool
+	collectMu        sync.Mutex
+	collectCancel    context.CancelFunc
+	collectDone      chan struct{}
+	collectStartedAt time.Time
 }
 
 // resizePadToSquare, matToNCHW, and encodeFaceToBase64 are implemented in

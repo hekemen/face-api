@@ -63,6 +63,19 @@
       {{end}}
     </div>
   </a>
+
+  <!-- Collected Faces -->
+  <a href="candidates" class="dash-card">
+    <div class="dash-card-title">Collected Faces</div>
+    <div class="dash-card-data">
+      {{if gt .DashGroups 0}}
+        <div class="stat-big">{{.DashGroups}}</div>
+        <div class="stat-label">groups ({{.DashCandidates}} faces)</div>
+      {{else}}
+        <div class="stat-label">No collected faces</div>
+      {{end}}
+    </div>
+  </a>
 </div>
 {{template "foot" .}}
 {{template "clockScript" .}}
