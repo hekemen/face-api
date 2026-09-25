@@ -14,10 +14,8 @@ import (
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
-	"h2hsecure.com/face/internal/domain"
 	"h2hsecure.com/face/internal/di"
 	"h2hsecure.com/face/internal/mqtt"
-	"h2hsecure.com/face/internal/server"
 )
 
 const (
@@ -122,32 +120,7 @@ func main() {
 			DiscoveryPrefix: "homeassistant",
 		}
 
-		// Create a check function that uses the old server for MQTT stream checks (transition)
-		// TODO: Replace with DI-wired service CheckStream
-		checkFunc := func(rtspURL string) (*domain.StreamCheckResult, error) {
-			srv, err := server.NewFaceServer(
-				kvDB, logger, rt, ortEnv, detSess, recSess, threshold,
-				rtspURL, enableUI,
-			)
-			if err != nil {
-				return nil, err
-			}
-			resp, err := srv.RunStreamCheck(rtspURL)
-			if err != nil {
-				return nil, err
-			}
-			return &domain.StreamCheckResult{
-				OperationDuration: domain.OperationDuration{DurationMs: resp.DurationMs},
-				Status:            resp.Status,
-				Name:              resp.Name,
-				Similarity:        resp.Similarity,
-				Reason:            resp.Reason,
-				Matched:           resp.Matched,
-				FaceImage:         resp.FaceImage,
-			}, nil
-		}
-
-		mqttBridge, err = mqtt.New(mqttCfg, checkFunc, nil, nil)
+		mqttBridge, err = mqtt.New(mqttCfg, faceAPI.CheckStream, nil, nil)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
 		}
