@@ -535,3 +535,11 @@ func (h *Handlers) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	// For now, always ready. A real implementation would check bbolt health.
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// apiMux is the main API mux, set after handler registration for UI in-process proxying.
+var apiMux *http.ServeMux
+
+// SetAPIMux sets the API mux for UI in-process API proxying.
+func SetAPIMux(mux *http.ServeMux) {
+	apiMux = mux
+}

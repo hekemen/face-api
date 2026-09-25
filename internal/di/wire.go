@@ -60,6 +60,14 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	mux := http.NewServeMux()
 	handlers.RegisterHandlers(mux)
 
+	// Register UI handlers (if enabled).
+	if cfg.EnableUI {
+		uiHandler := fhttp.NewUIHandler(faceService, cfg.EnableUI)
+		uiHandler.RegisterUIHandlers(mux)
+		// Make the API mux available for in-process UI API proxying.
+		fhttp.SetAPIMux(mux)
+	}
+
 	// Wrap with request logging middleware (skips /healthz and /readyz).
 	handler := fhttp.RequestLogging(mux, cfg.Logger)
 
