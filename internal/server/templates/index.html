@@ -24,22 +24,6 @@
     <div class="dash-card-desc">Identify a face from an image or live RTSP stream</div>
   </a>
 
-  <!-- Statistics -->
-  <a href="stats" class="dash-card">
-    <div class="dash-card-title">Statistics</div>
-    <div class="dash-card-data">
-      {{if .DashStats}}
-        <div class="stat-big">{{.DashStats.TotalChecks}}</div>
-        <div class="stat-label">total checks</div>
-        {{if .DashStats.LastMatched}}
-        <div class="stat-label" style="margin-top:0.25rem;">Last matched: {{.DashStats.LastMatched}}</div>
-        {{end}}
-      {{else}}
-        <div class="stat-label">No data yet</div>
-      {{end}}
-    </div>
-  </a>
-
   <!-- Audit Log -->
   <a href="audit" class="dash-card">
     <div class="dash-card-title">Audit Log</div>

@@ -28,6 +28,13 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 .header-left { display: flex; align-items: center; gap: 1rem; }
 .header-clock { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .header-clock .date { font-size: 0.8rem; color: var(--pico-muted-color); font-weight: 400; }
+.header-stats { display: flex; align-items: center; gap: 0.6rem; font-size: 0.8rem; }
+.header-stat { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); }
+.header-stat .count { font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-total .count { color: var(--pico-primary); }
+.stat-matched .count { color: var(--pico-success); }
+.stat-no-face .count { color: var(--pico-warning); }
+.stat-not-matched .count { color: var(--pico-error); }
 .header-controls { display: flex; align-items: center; gap: 0.75rem; }
 .theme-toggle, .auto-toggle { background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: inherit; transition: border-color 0.2s; }
 .theme-toggle:hover, .auto-toggle:hover { border-color: var(--pico-primary); }
@@ -73,6 +80,14 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 {{define "dashHeader"}}<div class="header">
   <div class="header-left">
     <div class="header-clock"><span id="clockTime"></span> <span class="date" id="clockDate"></span></div>
+    {{if .DashStats}}
+    <div class="header-stats" id="headerStats">
+      <span class="header-stat stat-total"><span class="count" id="statTotal">{{.DashStats.TotalChecks}}</span> total</span>
+      <span class="header-stat stat-matched"><span class="count" id="statMatched">{{.DashStats.TotalMatched}}</span> ✓</span>
+      <span class="header-stat stat-no-face"><span class="count" id="statNoFace">{{.DashStats.TotalNoFace}}</span> no face</span>
+      <span class="header-stat stat-not-matched"><span class="count" id="statNotMatched">{{.DashStats.TotalNotMatched}}</span> unmatched</span>
+    </div>
+    {{end}}
   </div>
   <div class="header-controls">
     <button class="theme-toggle" id="themeToggle" title="Toggle dark/light theme">🌙</button>
@@ -189,6 +204,20 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
   }
   updateClock();
   setInterval(updateClock, 1000);
+
+  // Stats auto-refresh
+  function updateStats() {
+    fetch('/stats')
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        if (data.total_checks !== undefined) document.getElementById('statTotal').textContent = data.total_checks;
+        if (data.total_matched !== undefined) document.getElementById('statMatched').textContent = data.total_matched;
+        if (data.total_no_face !== undefined) document.getElementById('statNoFace').textContent = data.total_no_face;
+        if (data.total_not_matched !== undefined) document.getElementById('statNotMatched').textContent = data.total_not_matched;
+      })
+      .catch(function() {});
+  }
+  setInterval(updateStats, 30000);
 
   // Theme toggle
   var themeBtn = document.getElementById('themeToggle');
