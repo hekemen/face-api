@@ -136,21 +136,23 @@ func (h *UIHandler) proxyAPI(w http.ResponseWriter, r *http.Request, endpoint st
 // --- Dashboard ---
 
 type uiPageData struct {
-	Result          string
-	Class           string
-	Users           []domain.UserInfo
-	Entries         []domain.AuditEntry
-	Count           int
-	Stats           *domain.StatsResponse
-	DashUsers       []domain.UserInfo
-	DashStats       *domain.StatsResponse
-	DashAudit       []domain.AuditEntry
-	DashCandidates  int
-	DashGroups      int
-	Candidates      []*domain.CandidateGroup
-	AllCandidates   []domain.Candidate
-	GitVersion      string
-	GitHubURL       string
+	Result             string
+	Class              string
+	Users              []domain.UserInfo
+	Entries            []domain.AuditEntry
+	Count              int
+	Stats              *domain.StatsResponse
+	DashUsers          []domain.UserInfo
+	DashStats          *domain.StatsResponse
+	DashAudit          []domain.AuditEntry
+	DashCandidates     int
+	DashGroups         int
+	Candidates         []*domain.CandidateGroup
+	AllCandidates      []domain.Candidate
+	CollectorRunning   bool
+	CollectorStartedAt time.Time
+	GitVersion         string
+	GitHubURL          string
 }
 
 func (h *UIHandler) renderIndex(w http.ResponseWriter, r *http.Request) {
