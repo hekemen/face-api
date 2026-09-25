@@ -1,0 +1,282 @@
+{{define "head"}}<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face API</title>
+<link rel="stylesheet" href="pico.min.css">
+<style>
+/* Small overrides on top of Pico — keep the existing custom UI conventions. */
+body > nav[role="navigation"] { background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); position: sticky; top: 0; z-index: 100; padding: 0.75rem 1rem; }
+body > nav[role="navigation"] ul { margin: 0; flex-wrap: wrap; gap: 0.25rem; }
+body > main.container { max-width: 960px; padding-bottom: 3rem; }
+body > main.container.has-header { max-width: 960px; padding: 1.5rem 1rem 3rem 1rem; }
+img.face-thumb { width: 64px; height: 64px; object-fit: cover; vertical-align: middle; border-radius: 6px; border: 1px solid var(--pico-muted-border-color); }
+img.face-preview, .preview-container img { max-width: 300px; max-height: 300px; border-radius: 8px; display: block; margin: 0 auto; box-shadow: var(--pico-card-box-shadow); }
+.preview-container { margin-top: 1rem; text-align: center; }
+#cameraStage { margin: 1rem 0; }
+#cameraStage video { width: 100%; max-width: 480px; border-radius: 8px; background: #000; display: block; margin: 0 auto; }
+#cameraStage canvas { display: none; }
+.result { margin-top: 1rem; white-space: pre-wrap; word-break: break-word; border-radius: 8px; }
+.result.error { color: var(--pico-error-color, #c00); }
+footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font-size: 0.85rem; position: fixed; bottom: 0; left: 0; right: 0; background: var(--pico-card-background-color, var(--pico-background-color)); border-top: 1px solid var(--pico-muted-border-color); z-index: 100; }
+@media (max-width: 600px) {
+  img.face-thumb { width: 48px; height: 48px; }
+}
+/* Header bar */
+.header { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; background: var(--pico-card-background-color, var(--pico-background-color)); border-bottom: 1px solid var(--pico-muted-border-color); }
+.header-left { display: flex; align-items: center; gap: 1rem; }
+.header-clock { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.header-clock .date { font-size: 0.8rem; color: var(--pico-muted-color); font-weight: 400; }
+.header-stats { display: flex; align-items: center; gap: 0.6rem; font-size: 0.8rem; }
+.header-stat { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); }
+.header-stat .count { font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-total .count { color: var(--pico-primary); }
+.stat-matched .count { color: var(--pico-success); }
+.stat-no-face .count { color: var(--pico-warning); }
+.stat-not-matched .count { color: var(--pico-error); }
+.header-controls { display: flex; align-items: center; gap: 0.75rem; }
+.theme-toggle, .auto-toggle { background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: inherit; transition: border-color 0.2s; }
+.theme-toggle:hover, .auto-toggle:hover { border-color: var(--pico-primary); }
+.auto-toggle.active { background: var(--pico-primary); color: #fff; border-color: var(--pico-primary); }
+.dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.dash-card { display: block; background: var(--pico-card-background-color); padding: 1.25rem; border-radius: 8px; text-decoration: none; color: inherit; border: 1px solid var(--pico-muted-border-color); transition: border-color 0.2s; }
+.dash-card:hover { border-color: var(--pico-primary); }
+.dash-card-title { font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem; }
+.dash-card-desc { color: var(--pico-muted-color); font-size: 0.85rem; margin-bottom: 0.5rem; }
+.dash-card-data { font-size: 0.85rem; }
+.dash-card-data .tag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+.tag-enroll { background: #d4edda; color: #155724; }
+.tag-recognize { background: #cce5ff; color: #004085; }
+.tag-stream-check { background: #fff3cd; color: #856404; }
+.dash-card-data .entry { padding: 0.25rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+.dash-card-data .entry:last-child { border-bottom: none; }
+.dash-card-data .entry-time { color: var(--pico-muted-color); font-size: 0.8rem; }
+.dash-card-data .entry-name { font-weight: 600; }
+.dash-card-data .entry-matched { color: var(--pico-success); }
+.dash-card-data .entry-not-matched { color: var(--pico-error); }
+.dash-card-data .stat-big { font-size: 1.8rem; font-weight: 700; color: var(--pico-primary); }
+.dash-card-data .stat-label { color: var(--pico-muted-color); font-size: 0.8rem; }
+.back-link { display: inline-block; margin-bottom: 1rem; color: var(--pico-primary); text-decoration: none; font-size: 0.9rem; }
+.back-link:hover { text-decoration: underline; }
+.page-btn { padding: 0.35rem 0.6rem; border: 1px solid var(--pico-muted-border-color); border-radius: 4px; background: var(--pico-card-background-color); color: inherit; cursor: pointer; font-size: 0.85rem; }
+.page-btn:hover { border-color: var(--pico-primary); }
+.page-btn.active { background: var(--pico-primary); color: #fff; border-color: var(--pico-primary); }
+</style>
+</head>
+<body>
+{{end}}
+{{define "subpageHeader"}}<div class="header">
+  <div class="header-left">
+    <div class="header-clock"><span id="clockTime"></span> <span class="date" id="clockDate"></span></div>
+  </div>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark/light theme">🌙</button>
+    <button class="auto-toggle" id="autoToggle" title="Toggle auto-reload">⟳ Auto</button>
+  </div>
+</div>
+<main class="container has-header">{{end}}
+
+{{define "dashHeader"}}<div class="header">
+  <div class="header-left">
+    <div class="header-clock"><span id="clockTime"></span> <span class="date" id="clockDate"></span></div>
+    {{if .DashStats}}
+    <div class="header-stats" id="headerStats">
+      <span class="header-stat stat-total"><span class="count" id="statTotal">{{.DashStats.TotalChecks}}</span> total</span>
+      <span class="header-stat stat-matched"><span class="count" id="statMatched">{{.DashStats.TotalMatched}}</span> ✓</span>
+      <span class="header-stat stat-no-face"><span class="count" id="statNoFace">{{.DashStats.TotalNoFace}}</span> no face</span>
+      <span class="header-stat stat-not-matched"><span class="count" id="statNotMatched">{{.DashStats.TotalNotMatched}}</span> unmatched</span>
+    </div>
+    {{end}}
+  </div>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark/light theme">🌙</button>
+    <button class="auto-toggle" id="autoToggle" title="Toggle auto-reload">⟳ Auto</button>
+  </div>
+</div>
+<main class="container">{{end}}
+
+{{define "camera"}}<script>
+(function() {
+  'use strict';
+  var fileInput = document.getElementById('image');
+  if (!fileInput) return;
+  var form = fileInput.closest('form');
+  if (!form) return;
+
+  var stage = document.getElementById('cameraStage');
+  var section = document.getElementById('cameraSection');
+  var camBtn = document.getElementById('cameraBtn');
+  var stopBtn = document.getElementById('cameraStopBtn');
+  var captureBtn = document.getElementById('cameraCaptureBtn');
+  var video = document.getElementById('cameraVideo');
+  var canvasRel = document.getElementById('cameraCanvas');
+  var ctx = canvasRel ? canvasRel.getContext('2d') : null;
+  var stream = null;
+
+  if (!camBtn || !video || !canvasRel || !ctx) return;
+
+  var isSecureCtx = (window.isSecureContext && window.isSecureContext === true)
+    || location.protocol === 'https:'
+    || location.hostname === 'localhost'
+    || location.hostname === '127.0.0.1';
+
+  function notice(msg) {
+    var note = document.createElement('p');
+    note.className = 'result';
+    note.textContent = msg;
+    if (section && section.parentNode) section.parentNode.insertBefore(note, section);
+  }
+
+  function stopStream() {
+    if (stream) { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
+    video.srcObject = null;
+  }
+  function hideStage() {
+    stopStream();
+    if (stage) stage.hidden = true;
+    if (camBtn) camBtn.hidden = false;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    // Plain HTTP on a non-local host → no webcam API. Keep file upload; warn.
+    if (section) section.hidden = true;
+    notice(isSecureCtx
+      ? 'Webcam unavailable (no mediaDevices API). Use file upload instead.'
+      : 'Camera needs HTTPS or localhost. Use file upload instead.');
+    return;
+  }
+
+  camBtn.addEventListener('click', function() {
+    if (stream) { hideStage(); return; }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+      .then(function(s) {
+        stream = s;
+        video.srcObject = s;
+        video.play().catch(function() {});
+        stage.hidden = false;
+        camBtn.hidden = true;
+      })
+      .catch(function(err) {
+        var name = err && err.name || 'unknown';
+        if (name === 'NotAllowedError') notice('Camera permission denied. Use file upload instead.');
+        else if (name === 'NotFoundError') notice('No camera found on this device. Use file upload instead.');
+        else notice('Could not start camera (' + name + '). Use file upload instead.');
+      });
+  });
+
+  function capture() {
+    if (!stream || !video.videoWidth) return;
+    var w = video.videoWidth, h = video.videoHeight;
+    canvasRel.width = w; canvasRel.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    canvasRel.toBlob(function(blob) {
+      if (!blob) return;
+      var f = new File([blob], 'webcam.jpg', { type: 'image/jpeg' });
+      var dt = new DataTransfer();
+      dt.items.add(f);
+      fileInput.files = dt.files;
+      try { fileInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+      hideStage();
+    }, 'image/jpeg', 0.92);
+  }
+
+  if (captureBtn) captureBtn.addEventListener('click', capture);
+  if (stopBtn) stopBtn.addEventListener('click', hideStage);
+})();
+</script>{{end}}
+
+{{define "foot"}}<footer>Face API · <a href="https://github.com/hekemen/face-api" target="_blank" rel="noopener">https://github.com/hekemen/face-api</a> · {{if .GitVersion}}{{.GitVersion}}{{else}}v0.0.8{{end}}</footer>
+</main>
+</body>
+</html>{{end}}
+
+{{define "clockScript"}}<script>
+(function() {
+  function updateClock() {
+    var now = new Date();
+    var timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    var dateStr = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    var t = document.getElementById('clockTime');
+    var d = document.getElementById('clockDate');
+    if (t) t.textContent = timeStr;
+    if (d) d.textContent = dateStr;
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // Stats auto-refresh
+  function updateStats() {
+    fetch('/stats')
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        if (data.total_checks !== undefined) document.getElementById('statTotal').textContent = data.total_checks;
+        if (data.total_matched !== undefined) document.getElementById('statMatched').textContent = data.total_matched;
+        if (data.total_no_face !== undefined) document.getElementById('statNoFace').textContent = data.total_no_face;
+        if (data.total_not_matched !== undefined) document.getElementById('statNotMatched').textContent = data.total_not_matched;
+      })
+      .catch(function() {});
+  }
+  setInterval(updateStats, 30000);
+
+  // Theme toggle
+  var themeBtn = document.getElementById('themeToggle');
+  if (themeBtn) {
+    var saved = localStorage.getItem('theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      themeBtn.textContent = saved === 'dark' ? '☀️' : '🌙';
+    }
+    themeBtn.addEventListener('click', function() {
+      var current = document.documentElement.getAttribute('data-theme');
+      var next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      themeBtn.textContent = next === 'dark' ? '☀️' : '🌙';
+    });
+  }
+
+  // Auto-reload toggle
+  var autoBtn = document.getElementById('autoToggle');
+  var autoInterval = null;
+  if (autoBtn) {
+    var savedAuto = localStorage.getItem('autoReload');
+    if (savedAuto === 'on') {
+      autoBtn.classList.add('active');
+    }
+    autoBtn.addEventListener('click', function() {
+      var isOn = autoBtn.classList.toggle('active');
+      localStorage.setItem('autoReload', isOn ? 'on' : 'off');
+      if (isOn) {
+        autoInterval = setInterval(function() { location.reload(); }, 30000);
+      } else {
+        clearInterval(autoInterval);
+        autoInterval = null;
+      }
+    });
+    if (savedAuto === 'on') {
+      autoInterval = setInterval(function() { location.reload(); }, 30000);
+    }
+  }
+})();
+</script>{{end}}
+
+{{define "imagepreview"}}<script>
+(function() {
+  'use strict';
+  var fileInput = document.getElementById('image');
+  var preview = document.getElementById('preview');
+  var previewImg = document.getElementById('previewImg');
+  if (!fileInput || !preview || !previewImg) return;
+  fileInput.addEventListener('change', function() {
+    var file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      previewImg.src = e.target.result;
+      preview.hidden = false;
+    };
+    reader.readAsDataURL(file);
+  });
+})();
+</script>{{end}}

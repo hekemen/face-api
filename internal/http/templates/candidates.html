@@ -1,0 +1,246 @@
+{{template "head" .}}
+{{template "subpageHeader" .}}
+<a href="./" class="back-link">← Dashboard</a>
+<h1>Collected Faces</h1>
+
+<!-- Collector status -->
+<div class="result" style="margin-bottom: 1rem; padding: 0.75rem;">
+  {{if .CollectorRunning}}
+    <span style="color: #0f0; font-weight: bold;">●</span> Collector is **running** — collecting unknown faces from the RTSP stream.<br>
+    Started: <strong>{{.CollectorStartedAt.Format "2006-01-02 15:04:05"}}</strong>
+  {{else}}
+    <span style="color: #f55; font-weight: bold;">●</span> Collector is **stopped**. Toggle it on in Home Assistant.
+  {{end}}
+</div>
+
+<!-- Candidates grid -->
+<div id="candidatesGrid" class="candidates-grid">
+  {{range .AllCandidates}}
+  <div class="candidate-card" data-id="{{.ID}}">
+    <label class="candidate-checkbox">
+      <input type="checkbox" name="candidates" value="{{.ID}}">
+      <span class="checkmark"></span>
+    </label>
+    <div class="face-thumb">
+      <img src="data:image/jpeg;base64,{{.FaceImage}}" alt="face" loading="lazy">
+    </div>
+    <div class="face-time">{{.Time.Format "2006-01-02 15:04:05"}}</div>
+  </div>
+  {{end}}
+</div>
+
+{{if and (not .AllCandidates) (not .Result)}}
+<p>No collected faces yet. Start the collector to collect unknown faces from the RTSP stream.</p>
+{{end}}
+
+<!-- Floating action bar (hidden until selection) -->
+<div id="actionBar" class="action-bar" style="display: none;">
+  <div class="action-bar-content">
+    <div class="action-bar-left">
+      <span id="selectedCount" class="badge">0</span> selected
+    </div>
+    <form id="bulkPromoteForm" class="action-bar-form" onsubmit="return handleBulkPromote(event)">
+      <input type="text" id="userName" name="name" placeholder="New user name" required>
+      <button type="submit" class="btn-primary">Create User</button>
+    </form>
+  </div>
+</div>
+
+<!-- Result message -->
+{{if .Result}}
+<div class="result {{.Class}}" id="resultMsg">{{.Result}}</div>
+{{end}}
+
+{{template "foot" .}}
+{{template "clockScript" .}}
+
+<script>
+(function() {
+  const grid = document.getElementById('candidatesGrid');
+  const actionBar = document.getElementById('actionBar');
+  const selectedCount = document.getElementById('selectedCount');
+  const userName = document.getElementById('userName');
+  const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
+
+  function updateSelection() {
+    const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
+    const count = checked.length;
+    selectedCount.textContent = count;
+    actionBar.style.display = count > 0 ? 'block' : 'none';
+  }
+
+  checkboxes.forEach(cb => {
+    cb.addEventListener('change', updateSelection);
+  });
+
+  window.handleBulkPromote = function(e) {
+    e.preventDefault();
+    const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
+    const ids = Array.from(checked).map(cb => cb.value);
+    const name = userName.value.trim();
+    if (ids.length === 0 || !name) return false;
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    fetch('/candidates/bulk-promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, candidate_ids: ids })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        alert('Error: ' + data.error);
+      }
+      window.location.reload();
+    })
+    .catch(err => {
+      alert('Request failed: ' + err);
+      btn.disabled = false;
+      btn.textContent = 'Create User';
+    });
+
+    return false;
+  };
+})();
+</script>
+
+<style>
+/* Candidates grid layout */
+.candidates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-bottom: 5rem;
+}
+
+.candidate-card {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--pico-card-background-color, var(--background-color));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.candidate-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.candidate-card.selected {
+  border-color: var(--pico-primary, #2c6ecb);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pico-primary, #2c6ecb) 30%, transparent);
+}
+
+.candidate-checkbox {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  cursor: pointer;
+}
+
+.candidate-checkbox input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: var(--pico-primary, #2c6ecb);
+}
+
+.face-thumb img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}
+
+.face-time {
+  font-size: 0.75em;
+  color: var(--pico-faint, #666);
+  text-align: center;
+  padding: 0.4rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Floating action bar */
+.action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--pico-background-color, #fff);
+  border-top: 1px solid var(--pico-muted-border-color, #ddd);
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+  z-index: 100;
+  padding: 0.75rem 1rem;
+}
+
+.action-bar-content {
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.action-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--pico-primary, #2c6ecb);
+  color: #fff;
+  font-weight: bold;
+  font-size: 0.8rem;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  padding: 0 8px;
+}
+
+.action-bar-form {
+  display: flex;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 200px;
+}
+
+.action-bar-form input[type="text"] {
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+}
+
+.btn-primary {
+  background: var(--pico-primary, #2c6ecb);
+  color: var(--pico-primary-background-color, #fff);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+</style>
