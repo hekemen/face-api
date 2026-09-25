@@ -11,6 +11,7 @@ import (
 	"h2hsecure.com/face/internal/repository"
 	"h2hsecure.com/face/internal/rtsp"
 	"h2hsecure.com/face/internal/service"
+	"h2hsecure.com/face/internal/domain"
 )
 
 // Config holds the configuration needed to wire the face API.
@@ -31,6 +32,8 @@ type Config struct {
 type FaceAPI struct {
 	Handler   http.Handler
 	MQTTReady bool
+	// CheckStream is the stream-check function used by the MQTT bridge.
+	CheckStream func(rtspURL string) (*domain.StreamCheckResult, error)
 }
 
 func NewFaceAPI(cfg Config) (*FaceAPI, error) {
@@ -72,8 +75,9 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	handler := fhttp.RequestLogging(mux, cfg.Logger)
 
 	return &FaceAPI{
-		Handler:   handler,
-		MQTTReady: true,
+		Handler:     handler,
+		MQTTReady:   true,
+		CheckStream: faceService.CheckStream,
 	}, nil
 }
 
