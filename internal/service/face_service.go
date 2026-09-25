@@ -84,13 +84,11 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 		return fmt.Errorf("maximum %d pictures per user", maxPicturesPerUser)
 	}
 
-	embeddings := u.Embeddings
-	if embeddings == nil {
-		embeddings = []domain.FaceEmbedding{}
-	}
-	pictures := u.Pictures
-	if pictures == nil {
-		pictures = []string{}
+	embeddings := []domain.FaceEmbedding{}
+	pictures := []string{}
+	if u != nil {
+		embeddings = u.Embeddings
+		pictures = u.Pictures
 	}
 
 	updated := &domain.User{

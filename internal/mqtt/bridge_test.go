@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"h2hsecure.com/face/internal/server"
+	"h2hsecure.com/face/internal/domain"
 )
 
 func TestBridgeDisabledWhenNoBroker(t *testing.T) {
@@ -16,8 +16,8 @@ func TestBridgeDisabledWhenNoBroker(t *testing.T) {
 		DeviceName:      "Test",
 		DiscoveryPrefix: "homeassistant",
 	}
-	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
-		return server.StreamCheckResponse{Status: "ok"}, nil
+	b, err := New(cfg, func(rtspURL string) (*domain.StreamCheckResult, error) {
+		return &domain.StreamCheckResult{Status: "ok"}, nil
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -31,8 +31,8 @@ func TestBridgeDefaults(t *testing.T) {
 	cfg := Config{
 		BrokerURL: "tcp://127.0.0.1:1883",
 	}
-	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
-		return server.StreamCheckResponse{Status: "ok"}, nil
+	b, err := New(cfg, func(rtspURL string) (*domain.StreamCheckResult, error) {
+		return &domain.StreamCheckResult{Status: "ok"}, nil
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -67,9 +67,9 @@ func TestBridgeQueueDrop(t *testing.T) {
 		DiscoveryPrefix: "homeassistant",
 	}
 	callCount := 0
-	b, err := New(cfg, func(rtspURL string) (server.StreamCheckResponse, error) {
+	b, err := New(cfg, func(rtspURL string) (*domain.StreamCheckResult, error) {
 		callCount++
-		return server.StreamCheckResponse{Status: "ok"}, nil
+		return &domain.StreamCheckResult{Status: "ok"}, nil
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
