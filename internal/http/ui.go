@@ -65,8 +65,6 @@ func (h *UIHandler) handleUI(w http.ResponseWriter, r *http.Request) {
 		h.handleUIEnroll(w, r)
 	case "recognize":
 		h.handleUIRecognize(w, r)
-	case "stream-check":
-		h.handleUIStreamCheck(w, r)
 	case "audit":
 		h.handleUIAudit(w, r)
 	case "stats":
@@ -274,34 +272,6 @@ func (h *UIHandler) handleUIRecognize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.renderTemplate(w, "recognize.html", page)
-}
-
-// --- Stream check page ---
-
-func (h *UIHandler) handleUIStreamCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		h.renderTemplate(w, "stream-check.html", uiPageData{})
-		return
-	}
-
-	result, class := h.proxyAPI(w, r, "/stream-check")
-	page := uiPageData{Result: result, Class: class}
-	if class == "" {
-		var resp domain.StreamCheckResult
-		if err := json.Unmarshal([]byte(result), &resp); err == nil {
-			msg := "Status: " + resp.Status
-			if resp.Name != "" {
-				msg += " | Name: " + resp.Name +
-					" | Similarity: " + strconv.FormatFloat(float64(resp.Similarity), 'f', 3, 32)
-			}
-			if resp.Reason != "" {
-				msg += " | Reason: " + resp.Reason
-			}
-			msg += " (" + strconv.FormatInt(resp.DurationMs, 10) + "ms)"
-			page.Result = msg
-		}
-	}
-	h.renderTemplate(w, "stream-check.html", page)
 }
 
 // --- Audit page ---
