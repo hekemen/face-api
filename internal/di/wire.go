@@ -2,7 +2,6 @@ package di
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
@@ -16,7 +15,7 @@ import (
 
 // Config holds the configuration needed to wire the face API.
 type Config struct {
-	DBPath       string
+	DB           *bolt.DB
 	Logger       zerolog.Logger
 	RT           *ort.Runtime
 	ORTEnv       *ort.Env
@@ -35,18 +34,13 @@ type FaceAPI struct {
 }
 
 func NewFaceAPI(cfg Config) (*FaceAPI, error) {
-	db, err := bolt.Open(cfg.DBPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
-	if err != nil {
+	if err := EnsureBuckets(cfg.DB); err != nil {
 		return nil, err
 	}
 
-	if err := EnsureBuckets(db); err != nil {
-		return nil, err
-	}
-
-	userRepo := repository.NewUserRepository(db)
-	candidateRepo := repository.NewCandidateRepository(db)
-	auditRepo := repository.NewAuditRepository(db)
+	userRepo := repository.NewUserRepository(cfg.DB)
+	candidateRepo := repository.NewCandidateRepository(cfg.DB)
+	auditRepo := repository.NewAuditRepository(cfg.DB)
 
 	processor := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession)
 	faceService := service.New(userRepo, candidateRepo, auditRepo, processor, cfg.Threshold)
@@ -66,15 +60,13 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	mux := http.NewServeMux()
 	handlers.RegisterHandlers(mux)
 
+	// Wrap with request logging middleware (skips /healthz and /readyz).
+	handler := fhttp.RequestLogging(mux, cfg.Logger)
+
 	return &FaceAPI{
-		Handler:   mux,
+		Handler:   handler,
 		MQTTReady: true,
 	}, nil
-}
-
-// OpenDB opens the bbolt database with the given path.
-func OpenDB(path string) (*bolt.DB, error) {
-	return bolt.Open(path, 0600, &bolt.Options{Timeout: 1 * time.Second})
 }
 
 // EnsureBuckets creates the required bbolt buckets in the given database.

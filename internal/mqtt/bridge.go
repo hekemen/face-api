@@ -11,12 +11,12 @@ import (
 	"github.com/eclipse/paho.mqtt.golang"
 	"github.com/rs/zerolog"
 
-	"h2hsecure.com/face/internal/server"
+	"h2hsecure.com/face/internal/domain"
 )
 
 // CheckFunc is the stream-check function that the Bridge calls when
 // a trigger message arrives. It returns the result of the check.
-type CheckFunc func(rtspURL string) (server.StreamCheckResponse, error)
+type CheckFunc func(rtspURL string) (*domain.StreamCheckResult, error)
 
 // CollectFunc is the collect start/stop function that the Bridge calls when
 // a collect command arrives.
@@ -244,7 +244,7 @@ func (b *Bridge) worker() {
 		case <-b.queue:
 			result, err := b.check("")
 			if err != nil {
-				result = server.StreamCheckResponse{
+				result = &domain.StreamCheckResult{
 					Status: "not ok",
 					Reason: err.Error(),
 				}

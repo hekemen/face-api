@@ -138,11 +138,17 @@ func (h *Handlers) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.EnrollImage(name, imageData); err != nil {
-		if strings.Contains(err.Error(), "maximum") {
-			writeError(w, http.StatusBadRequest, err.Error())
+		msg := err.Error()
+		if strings.Contains(msg, "maximum") {
+			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "Face processing or storage failed: "+err.Error())
+		// Decode/format errors are bad requests.
+		if strings.Contains(msg, "decode") || strings.Contains(msg, "format") {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Face processing or storage failed: "+msg)
 		return
 	}
 
@@ -214,7 +220,13 @@ func (h *Handlers) handleRecognize(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.RecognizeImage(imageData)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		msg := err.Error()
+		// Decode/format errors are bad requests, not internal errors.
+		if strings.Contains(msg, "decode") || strings.Contains(msg, "format") {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, msg)
 		return
 	}
 

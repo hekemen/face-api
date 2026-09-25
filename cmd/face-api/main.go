@@ -14,6 +14,8 @@ import (
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
+	"h2hsecure.com/face/internal/domain"
+	"h2hsecure.com/face/internal/di"
 	"h2hsecure.com/face/internal/mqtt"
 	"h2hsecure.com/face/internal/server"
 )
@@ -37,10 +39,6 @@ func main() {
 	}
 	defer kvDB.Close()
 
-	if err := server.EnsureBucket(kvDB); err != nil {
-		log.Fatalf("Failed to create bbolt bucket: %v", err)
-	}
-
 	// 2. Load ONNX Runtime and both models
 	rt, err := ort.NewRuntime("", 23)
 	if err != nil {
@@ -48,11 +46,6 @@ func main() {
 	}
 	defer rt.Close()
 
-	// Log severity is set to Error (not Warning) to suppress ORT's benign
-	// GPU device discovery warning (device_discovery.cc), which tries to read
-	// /sys/class/drm/*/device/vendor at env creation even on CPU-only builds.
-	// The app only runs the two ONNX models on the CPU, so no hardware device
-	// discovery is needed.
 	ortEnv, err := rt.NewEnv("face-api", ort.LoggingLevelError)
 	if err != nil {
 		log.Fatalf("Failed to create ONNX Runtime environment: %v", err)
@@ -93,10 +86,20 @@ func main() {
 		}
 	}
 
-	// 3. Create server and register handlers
-	srv, err := server.NewFaceServer(kvDB, logger, rt, ortEnv, detSess, recSess, threshold, os.Getenv("RTSP_URL"), enableUI)
+	// 3. Wire up the hexagonal architecture
+	faceAPI, err := di.NewFaceAPI(di.Config{
+		DB:         kvDB,
+		Logger:     logger,
+		RT:         rt,
+		ORTEnv:     ortEnv,
+		DetSession: detSess,
+		RecSession: recSess,
+		RTSPURL:    os.Getenv("RTSP_URL"),
+		EnableUI:   enableUI,
+		Threshold:  threshold,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create face server: %v", err)
+		log.Fatalf("Failed to wire face API: %v", err)
 	}
 
 	// 4. Set up MQTT bridge if configured
@@ -118,18 +121,41 @@ func main() {
 			QueueDepth:      queueDepth,
 			DiscoveryPrefix: "homeassistant",
 		}
-		mqttBridge, err = mqtt.New(mqttCfg, srv.RunStreamCheck, srv.HandleMQTTCollect, srv.IsCollectorRunning)
+
+		// Create a check function that uses the old server for MQTT stream checks (transition)
+		// TODO: Replace with DI-wired service CheckStream
+		checkFunc := func(rtspURL string) (*domain.StreamCheckResult, error) {
+			srv, err := server.NewFaceServer(
+				kvDB, logger, rt, ortEnv, detSess, recSess, threshold,
+				rtspURL, enableUI,
+			)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := srv.RunStreamCheck(rtspURL)
+			if err != nil {
+				return nil, err
+			}
+			return &domain.StreamCheckResult{
+				OperationDuration: domain.OperationDuration{DurationMs: resp.DurationMs},
+				Status:            resp.Status,
+				Name:              resp.Name,
+				Similarity:        resp.Similarity,
+				Reason:            resp.Reason,
+				Matched:           resp.Matched,
+				FaceImage:         resp.FaceImage,
+			}, nil
+		}
+
+		mqttBridge, err = mqtt.New(mqttCfg, checkFunc, nil, nil)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
 		}
 	}
 
-	mux := http.NewServeMux()
-	srv.RegisterHandlers(mux)
-
 	logger.Info().Msg("Face API Server running on http://localhost:8081")
 
-	httpServer := &http.Server{Addr: ":8081", Handler: srv.RequestLogging(mux)}
+	httpServer := &http.Server{Addr: ":8081", Handler: faceAPI.Handler}
 
 	// Start MQTT bridge if configured.
 	if mqttBridge != nil {
@@ -152,7 +178,7 @@ func main() {
 	sig := <-sigCh
 	logger.Info().Str("signal", sig.String()).Msg("shutting down")
 
-	// Stop MQTT bridge first (drain, publish offline, disconnect).
+	// Stop MQTT bridge first.
 	if mqttBridge != nil {
 		mqttBridge.Stop()
 	}
@@ -162,7 +188,6 @@ func main() {
 	defer cancel()
 	httpServer.Shutdown(ctx)
 
-	// Drain server error (if any).
 	select {
 	case err := <-serverErr:
 		if err != nil && err != http.ErrServerClosed {
