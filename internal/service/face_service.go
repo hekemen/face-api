@@ -44,6 +44,9 @@ func (s *FaceServiceImpl) WithRTSPReader(r domain.RTSPReader) *FaceServiceImpl {
 // --- CheckStream (URL-based, uses injected RTSP reader) ---
 
 func (s *FaceServiceImpl) CheckStream(rtspURL string) (*domain.StreamCheckResult, error) {
+	if rtspURL == "" {
+		return nil, fmt.Errorf("missing RTSP URL")
+	}
 	if s.rtspReader == nil {
 		return nil, fmt.Errorf("RTSP reader not configured")
 	}

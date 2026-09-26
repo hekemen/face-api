@@ -319,6 +319,7 @@ func (h *Handlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
 	name := r.URL.Path[len("/users/"):]
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "Missing user name")
@@ -330,9 +331,10 @@ func (h *Handlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "deleted",
-		"name":   name,
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "deleted",
+		"name":        name,
+		"duration_ms": time.Since(start).Milliseconds(),
 	})
 }
 

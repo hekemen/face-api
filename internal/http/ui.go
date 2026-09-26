@@ -147,8 +147,6 @@ type uiPageData struct {
 	DashGroups         int
 	Candidates         []*domain.CandidateGroup
 	AllCandidates      []domain.Candidate
-	CollectorRunning   bool
-	CollectorStartedAt time.Time
 	GitVersion         string
 	GitHubURL          string
 }
