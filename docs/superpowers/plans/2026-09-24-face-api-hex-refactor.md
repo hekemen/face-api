@@ -329,7 +329,7 @@ Options appear:
 | Page | Changes |
 |------|---------|
 | **Dashboard** (`/ui/`) | Remove collector status; add "Check Stream" button |
-| **Enroll** (`/ui/enroll`) | Add tabs: Upload | Webcam | RTSP | Collected |
+| **Enroll** (`/ui/enroll`) | Add tabs: Upload | Webcam | Collected |
 | **Recognize** (`/ui/recognize`) | Add tab: RTSP (same as stream-check) |
 | **Stream-Check** (`/ui/stream-check`) | Simplified — single frame check, shows result |
 | **Collected Faces** (`/ui/candidates`) | Grid + checkboxes + "Create User" + "Match to Existing" |
@@ -340,12 +340,11 @@ Options appear:
 
 ```
 ┌──────────────────────────────────────────────┐
-│  [Upload] [Webcam] [RTSP] [Collected Faces]  │
+│  [Upload] [Webcam] [Collected Faces]         │
 ├──────────────────────────────────────────────┤
 │                                              │
 │  Upload tab: file input + name + enroll      │
 │  Webcam tab: getUserMedia → canvas → JPEG    │
-│  RTSP tab:   <video> + capture button        │
 │  Collected tab: select candidate → promote   │
 │                                              │
 └──────────────────────────────────────────────┘
@@ -429,7 +428,7 @@ Options appear:
 4. **[x] RTSP enroll URL** — Should `/enroll-from-stream` use the configured `RTSP_URL` env var (same as current stream-check), or should it accept an `rtsp_url` form field like `/stream-check`?
    **Answer:** Use `RTSP_URL` env var only. Do not allow the user to supply a custom URL via form field.
 
-5. **[x] MQTT check behavior** — When MQTT trigger fires and the face is **not matched**, should it auto-collect to candidates (as designed), or just log to audit and return `matched=false`? Auto-collect means candidates accumulate from both UI checks AND MQTT triggers.
+5. **[x] MQTT check behavior** — When MQTT trigger fires and the face is not matched, it auto-collects to candidates. This is implemented and confirmed.
 
 ## 12. Files to Create / Delete
 

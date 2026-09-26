@@ -120,7 +120,7 @@ func main() {
 			DiscoveryPrefix: "homeassistant",
 		}
 
-		mqttBridge, err = mqtt.New(mqttCfg, faceAPI.CheckStream, nil, nil)
+		mqttBridge, err = mqtt.New(mqttCfg, faceAPI.CheckStream)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
 		}

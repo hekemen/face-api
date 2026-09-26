@@ -306,12 +306,12 @@ List collected candidate faces, grouped by similarity.
 
 Promote a single candidate to an enrolled user.
 
-- **Content-Type**: `application/x-www-form-urlencoded`
+- **Content-Type**: `application/json`
+- **Body**: `{"name": "New User"}`
 - **Query Parameters**:
   - `id` (required): Candidate ID
-  - `name` (required): New user name
 
-**Success (200):**
+**Success (201):**
 ```json
 {
   "status": "promoted",
@@ -320,21 +320,40 @@ Promote a single candidate to an enrolled user.
 }
 ```
 
+**Error (400) - Missing fields:**
+```json
+{
+  "error": "Missing 'name' field"
+}
+```
+
+**Error (409) - Duplicate user:**
+```json
+{
+  "error": "user already exists"
+}
+```
+
 ### 4.12 `POST /candidates/bulk-promote`
 
 Promote multiple candidates to a single user.
 
-- **Content-Type**: `application/x-www-form-urlencoded`
-- **Form Fields**:
-  - `name` (required): New user name
-  - `ids[]` (required): Candidate IDs (repeatable)
+- **Content-Type**: `application/json`
+- **Body**: `{"name": "New User", "candidate_ids": ["uuid-1", "uuid-2"]}`
 
-**Success (200):**
+**Success (201):**
 ```json
 {
-  "status": "promoted",
+  "status": "bulk-promoted",
   "name": "New User",
   "duration_ms": 78
+}
+```
+
+**Error (400) - Missing fields:**
+```json
+{
+  "error": "Missing 'name' field"
 }
 ```
 

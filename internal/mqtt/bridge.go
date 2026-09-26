@@ -18,13 +18,6 @@ import (
 // a trigger message arrives. It returns the result of the check.
 type CheckFunc func(rtspURL string) (*domain.StreamCheckResult, error)
 
-// CollectFunc is the collect start/stop function that the Bridge calls when
-// a collect command arrives.
-type CollectFunc func(action string) error
-
-// CollectStateFunc returns true if the collector is currently running.
-type CollectStateFunc func() bool
-
 // Config holds MQTT configuration.
 type Config struct {
 	BrokerURL       string
@@ -40,21 +33,19 @@ type Config struct {
 // Bridge manages the MQTT connection, Home Assistant discovery, trigger
 // subscription, and result publishing.
 type Bridge struct {
-	cfg        Config
-	check      CheckFunc
-	collect    CollectFunc
-	collectSt  CollectStateFunc
-	client     mqtt.Client
-	log        zerolog.Logger
-	queue      chan struct{}
-	done       chan struct{}
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	cfg    Config
+	check  CheckFunc
+	client mqtt.Client
+	log    zerolog.Logger
+	queue  chan struct{}
+	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // New creates a new Bridge. Returns nil if cfg.BrokerURL is empty (MQTT disabled).
-func New(cfg Config, check CheckFunc, collect CollectFunc, collectSt CollectStateFunc) (*Bridge, error) {
+func New(cfg Config, check CheckFunc) (*Bridge, error) {
 	if cfg.BrokerURL == "" {
 		return nil, nil
 	}
@@ -75,12 +66,10 @@ func New(cfg Config, check CheckFunc, collect CollectFunc, collectSt CollectStat
 	}
 
 	b := &Bridge{
-		cfg:       cfg,
-		check:     check,
-		collect:   collect,
-		collectSt: collectSt,
-		queue:     make(chan struct{}, cfg.QueueDepth),
-		done:      make(chan struct{}),
+		cfg:    cfg,
+		check:  check,
+		queue:  make(chan struct{}, cfg.QueueDepth),
+		done:   make(chan struct{}),
 	}
 
 	// Set up MQTT client options.
@@ -106,9 +95,6 @@ func New(cfg Config, check CheckFunc, collect CollectFunc, collectSt CollectStat
 		// Subscribe to trigger topic.
 		triggerTopic := cfg.BaseTopic + "/trigger"
 		c.Subscribe(triggerTopic, 1, b.onMessage)
-		// Subscribe to command topic for collect start/stop.
-		cmdTopic := cfg.BaseTopic + "/cmd"
-		c.Subscribe(cmdTopic, 1, b.onCommand)
 		// Publish HA discovery configs.
 		b.publishDiscovery(c)
 	})
@@ -201,35 +187,6 @@ func (b *Bridge) onMessage(_ mqtt.Client, msg mqtt.Message) {
 			}
 		default:
 			// Queue became non-full between checks; drop this message.
-		}
-	}
-}
-
-// onCommand handles collect start/stop commands from Home Assistant.
-func (b *Bridge) onCommand(_ mqtt.Client, msg mqtt.Message) {
-	payload := string(msg.Payload())
-	if payload == "" {
-		return
-	}
-
-	if b.collect == nil {
-		b.log.Warn().Msg("MQTT collect function not set")
-		return
-	}
-
-	b.log.Info().Str("action", payload).Msg("MQTT collect command received")
-	if err := b.collect(payload); err != nil {
-		b.log.Error().Err(err).Str("action", payload).Msg("MQTT collect command failed")
-		return
-	}
-
-	// Publish current state to HA switch.
-	if b.collectSt != nil {
-		stateTopic := b.cfg.BaseTopic + "/collect/state"
-		if b.collectSt() {
-			b.client.Publish(stateTopic, 1, true, "on")
-		} else {
-			b.client.Publish(stateTopic, 1, true, "off")
 		}
 	}
 }
@@ -342,28 +299,6 @@ func (b *Bridge) publishDiscovery(c mqtt.Client) {
 		"availability_mode":     availMode,
 	}
 	c.Publish(b.discoveryTopic("button", "face_api_check"), 1, true, mustJSON(buttonConfig))
-
-	// Unpublish old collect button config (button type) to force HA to
-	// recreate it as a switch with on/off state.
-	c.Publish(b.discoveryTopic("button", "face_api_collect"), 1, true, []byte{})
-	time.Sleep(100 * time.Millisecond)
-
-	// Switch: collect (toggle start/stop with state feedback).
-	switchConfig := map[string]any{
-		"name":                  "Collect",
-		"unique_id":             "face_api_collect",
-		"command_topic":         b.cfg.BaseTopic + "/cmd",
-		"payload_on":            "start",
-		"payload_off":           "stop",
-		"state_topic":           b.cfg.BaseTopic + "/collect/state",
-		"payload_available":     "online",
-		"payload_not_available": "offline",
-		"device":                device,
-		"availability_topic":    availTopic,
-		"availability_mode":     availMode,
-		"optimistic":            false,
-	}
-	c.Publish(b.discoveryTopic("switch", "face_api_collect"), 1, true, mustJSON(switchConfig))
 }
 
 func (b *Bridge) discoveryTopic(component, objectID string) string {

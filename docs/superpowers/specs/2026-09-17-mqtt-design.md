@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Add MQTT support to the face-api server so that Home Assistant automations can trigger a stream check (RTSP camera scan) and receive structured results. The server publishes Home Assistant MQTT Discovery configs for three entities: a sensor (last detected name), a binary sensor (matched/not matched), and a button (manual trigger).
+Add MQTT support to the face-api server so that Home Assistant automations can trigger a stream check (RTSP camera scan) and receive structured results. The server publishes Home Assistant MQTT Discovery configs for four entities: a sensor (last detected name), a binary sensor (matched/not matched), a button (manual trigger), and a switch (collect start/stop).
 
 ## 2. Architecture
 
@@ -16,7 +16,7 @@ Add MQTT support to the face-api server so that Home Assistant automations can t
 
 **`internal/mqtt/bridge.go`** — new package. `Bridge` type:
 
-- `New(cfg Config, check CheckFunc) (*Bridge, error)` — creates the bridge; `CheckFunc` is the shared stream-check function (injected, so testable with a mock).
+- `New(cfg Config, check CheckFunc, collect CollectFunc, collectSt CollectStateFunc) (*Bridge, error)` — creates the bridge; `CheckFunc` is the shared stream-check function (injected, so testable with a mock); `CollectFunc` is the collect start/stop handler.
 - `Run(ctx context.Context) error` — connects, publishes discovery + availability, subscribes to trigger, starts worker goroutine, blocks until ctx cancelled.
 - `Stop()` — graceful: drain queue, publish availability offline, unsubscribe, disconnect.
 
@@ -43,7 +43,8 @@ HA automation ──publish──> <base>/trigger ──MQTT──> Bridge
                                                          RTSP frame → detect → recognize → match
                                                               │
                                                          publish──> <base>/result (retained, JSON)
-                                                         publish──> <base>/matched (retained, "on"/"off")
+                                                         publish──> <base>/matched (retained, JSON: {matched, name, similarity, last_scan, face_image})
+                                                         publish──> <base>/collect/state (retained, "on"/"off")
                                                          publish──> <base>/availability (retained, "online"/"offline")
 ```
 
@@ -55,9 +56,10 @@ HA automation ──publish──> <base>/trigger ──MQTT──> Bridge
 | `MQTT_USERNAME` | (empty) | Optional auth. |
 | `MQTT_PASSWORD` | (empty) | Optional auth. |
 | `MQTT_CLIENT_ID` | `face-api` | Client ID. |
-| `MQTT_BASE_TOPIC` | `face/scan` | Base topic; derived: `trigger`, `result`, `availability`, `matched`. |
+| `MQTT_BASE_TOPIC` | `face/scan` | Base topic; derived: `trigger`, `result`, `availability`, `matched`, `cmd`, `collect/state`. |
 | `MQTT_DEVICE_NAME` | `Face API` | HA device name. |
 | `MQTT_QUEUE_DEPTH` | `16` | Trigger queue depth. |
+| `MQTT_DISCOVERY_PREFIX` | `homeassistant` | HA discovery prefix. |
 
 ### 2.4 Startup / Shutdown
 
@@ -74,13 +76,14 @@ HA automation ──publish──> <base>/trigger ──MQTT──> Bridge
 
 ## 3. Home Assistant Discovery
 
-Three entities under `homeassistant/<component>/face_api_<name>/config`:
+Four entities under `homeassistant/<component>/face_api_<name>/config`:
 
 | Entity | Component | State Topic | Command Topic | Attributes |
 |--------|-----------|-------------|---------------|------------|
-| `sensor.face_api_last_result` | `mqtt` | `<base>/result` | — | `similarity`, `matched`, `reason`, `duration_ms`, `last_scan` |
-| `binary_sensor.face_api_matched` | `mqtt` | `<base>/matched` | — | `last_scan` |
+| `sensor.face_api_last_result` | `mqtt` | `<base>/matched` | — | `matched`, `name`, `similarity`, `last_scan`, `face_image` |
+| `binary_sensor.face_api_matched` | `mqtt` | `<base>/matched` | — | `matched`, `name`, `similarity`, `last_scan`, `face_image` |
 | `button.face_api_check` | `button` | — | `<base>/trigger` | — |
+| `switch.face_api_collect` | `switch` | `<base>/collect/state` | `<base>/cmd` | — |
 
 Device block: `name: "Face API"`, `identifiers: ["face_api"]`, `model: "face-api"`, `sw_version: <git sha>`.
 
@@ -94,9 +97,9 @@ Availability: `<base>/availability` (retained). LWT (Last Will & Testament) set 
 {
   "name": "Last Result",
   "unique_id": "face_api_last_result",
-  "state_topic": "face/scan/result",
-  "value_template": "{{ value_json.name if value_json.name else 'unknown' }}",
-  "json_attributes_topic": "face/scan/result",
+  "state_topic": "face/scan/matched",
+  "value_template": "{{ 'matched ' + value_json.name if value_json.matched else 'not matched' }}",
+  "json_attributes_topic": "face/scan/matched",
   "device": {
     "name": "Face API",
     "identifiers": ["face_api"],
@@ -117,6 +120,8 @@ Availability: `<base>/availability` (retained). LWT (Last Will & Testament) set 
   "name": "Matched",
   "unique_id": "face_api_matched",
   "state_topic": "face/scan/matched",
+  "payload_on": true,
+  "payload_off": false,
   "value_template": "{{ value_json.matched }}",
   "device": {
     "name": "Face API",
@@ -152,6 +157,30 @@ Availability: `<base>/availability` (retained). LWT (Last Will & Testament) set 
 }
 ```
 
+**Switch** (`homeassistant/switch/face_api_collect/config`):
+
+```json
+{
+  "name": "Collect",
+  "unique_id": "face_api_collect",
+  "command_topic": "face/scan/cmd",
+  "payload_on": "start",
+  "payload_off": "stop",
+  "state_topic": "face/scan/collect/state",
+  "device": {
+    "name": "Face API",
+    "identifiers": ["face_api"],
+    "model": "face-api",
+    "sw_version": "dev"
+  },
+  "availability_topic": "face/scan/availability",
+  "payload_available": "online",
+  "payload_not_available": "offline",
+  "availability_mode": "all",
+  "optimistic": false
+}
+```
+
 ### 3.2 Result Payload
 
 Published to `<base>/result` (retained, QoS 1):
@@ -163,8 +192,8 @@ Published to `<base>/result` (retained, QoS 1):
   "similarity": 0.87,
   "matched": true,
   "reason": "",
-  "duration_ms": 234,
-  "timestamp": "2026-09-17T12:00:00Z"
+  "face_image": "b64",
+  "duration_ms": 234
 }
 ```
 
@@ -173,7 +202,10 @@ Published to `<base>/matched` (retained, QoS 1):
 ```json
 {
   "matched": true,
-  "last_scan": "2026-09-17T12:00:00Z"
+  "name": "John",
+  "similarity": 0.87,
+  "last_scan": "2026-09-17T12:00:00Z",
+  "face_image": "b64"
 }
 ```
 
@@ -189,7 +221,7 @@ On message received: if payload is empty, skip (avoid reacting to our own retain
 
 ### 4.3 Worker Goroutine
 
-Loop: dequeue trigger → call `checkFunc(ctx)` → publish result JSON to `<base>/result` (retained, QoS 1) → publish matched state to `<base>/matched` (retained, QoS 1). If checkFunc returns error: publish `status: "not ok"` with error reason.
+Loop: dequeue trigger → call `checkFunc("")` (URL from config, not trigger message) → publish result JSON to `<base>/result` (retained, QoS 1) → publish matched JSON (`{matched, name, similarity, last_scan, face_image}`) to `<base>/matched` (retained, QoS 1). If checkFunc returns error: publish `status: "not ok"` with error reason.
 
 ### 4.4 Shutdown
 
@@ -201,7 +233,6 @@ Loop: dequeue trigger → call `checkFunc(ctx)` → publish result JSON to `<bas
 |------|--------|
 | `internal/mqtt/bridge.go` | **New** — Bridge type, Config, CheckFunc, discovery publishing, trigger subscription, worker, shutdown |
 | `internal/mqtt/bridge_test.go` | **New** — unit tests with mock broker |
-| `internal/mqtt/bridge_integration_test.go` | **New** — integration with testcontainer broker |
 | `internal/server/server.go` | Extract `RunStreamCheck(rtspURL) (StreamCheckResponse, error)` from `handleStreamCheck`; handler becomes thin wrapper |
 | `internal/server/face.go` | Add `mqttBridge *mqtt.Bridge` field to `FaceServer` (nil when disabled) |
 | `cmd/face-api/main.go` | Add signal handling (SIGINT/SIGTERM), start MQTT bridge, graceful shutdown |
@@ -225,11 +256,6 @@ Loop: dequeue trigger → call `checkFunc(ctx)` → publish result JSON to `<bas
 - `TestBridgeQueueDropOldest` — flood queue past capacity, verify oldest dropped.
 - `TestBridgeAvailability` — verify online/offline LWT behavior.
 - `TestBridgeDisabledWhenNoBroker` — empty broker URL → bridge is a no-op (or not started).
-
-### Integration test (`internal/mqtt/bridge_integration_test.go`)
-
-- Uses `testcontainers-go` with `eclipse-mosquitto` container.
-- Full flow: connect → discover → trigger → result → availability.
 
 ### Refactored `handleStreamCheck`
 
