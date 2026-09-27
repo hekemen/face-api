@@ -141,6 +141,91 @@ func (r *UserRepository) ListAll() ([]*domain.User, error) {
 	return users, err
 }
 
+// BackfillUsersFromAudit scans the Audit bucket for ENROLL entries and
+// recovers up to 3 face JPEGs plus the latest enrollment time for users
+// whose stored value predates the picture feature (or has empty pictures).
+// It returns the number of users that were backfilled.
+func (r *UserRepository) BackfillUsersFromAudit() (int, error) {
+	var backfilled int
+	err := r.db.Update(func(tx *bolt.Tx) error {
+		facesB := tx.Bucket([]byte(facesBucket))
+		if facesB == nil {
+			return nil
+		}
+		auditB := tx.Bucket([]byte(auditBucket))
+		if auditB == nil {
+			return nil
+		}
+
+		// Collect ENROLL entries grouped by user name, oldest first.
+		type enrollEntry struct {
+			Name      string
+			FaceImage string
+			Time      string
+		}
+		var enrollments []enrollEntry
+		c := auditB.Cursor()
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			var j auditEntryJSON
+			if err := json.Unmarshal(v, &j); err != nil {
+				continue
+			}
+			if j.Endpoint != "enroll" || j.FaceImage == "" {
+				continue
+			}
+			enrollments = append(enrollments, enrollEntry{
+				Name:      j.Name,
+				FaceImage: j.FaceImage,
+				Time:      j.Time,
+			})
+		}
+
+		// Group by name, keep up to 3 pictures and the latest time.
+		type backfillData struct {
+			Pictures []string
+			Latest   string
+		}
+		grouped := make(map[string]*backfillData)
+		for _, e := range enrollments {
+			d, ok := grouped[e.Name]
+			if !ok {
+				d = &backfillData{}
+				grouped[e.Name] = d
+			}
+			if len(d.Pictures) < 3 {
+				d.Pictures = append(d.Pictures, e.FaceImage)
+			}
+			if e.Time > d.Latest {
+				d.Latest = e.Time
+			}
+		}
+
+		// Apply backfill to users that need it.
+		return facesB.ForEach(func(name, val []byte) error {
+			var stored storedUser
+			if err := json.Unmarshal(val, &stored); err != nil {
+				return nil // skip malformed
+			}
+			d, ok := grouped[string(name)]
+			if !ok || len(stored.Pictures) > 0 || stored.UpdatedAt != "" {
+				return nil
+			}
+			stored.Pictures = d.Pictures
+			stored.UpdatedAt = d.Latest
+			updated, err := json.Marshal(stored)
+			if err != nil {
+				return err
+			}
+			if err := facesB.Put(name, updated); err != nil {
+				return err
+			}
+			backfilled++
+			return nil
+		})
+	})
+	return backfilled, err
+}
+
 // --- Internal types ---
 
 // storedUser is the per-user value persisted in the Faces bucket.
