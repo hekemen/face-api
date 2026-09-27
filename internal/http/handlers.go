@@ -327,6 +327,10 @@ func (h *Handlers) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.DeleteUser(name); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

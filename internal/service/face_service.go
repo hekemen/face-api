@@ -305,6 +305,14 @@ func (s *FaceServiceImpl) DeleteUser(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	exists, err := s.users.Exists(name)
+	if err != nil {
+		return fmt.Errorf("check user: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("user %q not found", name)
+	}
+
 	if err := s.users.Delete(name); err != nil {
 		return fmt.Errorf("delete user: %w", err)
 	}

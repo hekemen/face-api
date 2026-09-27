@@ -45,6 +45,11 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	candidateRepo := repository.NewCandidateRepository(cfg.DB)
 	auditRepo := repository.NewAuditRepository(cfg.DB)
 
+	// Backfill picture data from audit log for legacy users.
+	if _, err := userRepo.BackfillUsersFromAudit(); err != nil {
+		cfg.Logger.Warn().Err(err).Msg("backfill users from audit failed")
+	}
+
 	processor := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession)
 	faceService := service.New(userRepo, candidateRepo, auditRepo, processor, cfg.Threshold)
 	rtspReader := rtsp.New()

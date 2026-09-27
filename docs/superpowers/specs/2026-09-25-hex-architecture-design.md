@@ -196,3 +196,36 @@ The cache is protected by a `sync.RWMutex`. All cache writes acquire a write loc
 - The old `internal/server/` package is kept alongside the new architecture for reference
 - Old code should be removed once confident the new architecture handles all cases
 - The `storedUser` JSON format supports backward-compatible migration of legacy embedding formats
+
+## 8. Legacy Data Backfill
+
+### 8.1 storedUser Migration
+
+When loading users from bbolt, the `UserRepository` transparently handles three stored formats:
+
+| Stored Value Format | Handling |
+|---------------------|----------|
+| `{"embeddings":[[...]],"pictures":["b64"], "updated_at":"RFC3339"}` (current) | Loaded as-is |
+| `[[...],[...]]` (nested embedding array) | Converted to `storedUser` with empty pictures/updated_at |
+| `[...]` (flat embedding array) | Converted to `storedUser` with single embedding, empty pictures/updated_at |
+
+The `legacyToUser` function in `user_repo.go` detects and converts legacy formats.
+
+### 8.2 backfillUsersFromAudit
+
+For users whose stored value predates the picture feature (or has empty pictures), the `BackfillUsersFromAudit` method scans the `"Audit"` bucket for **ENROLL** entries and recovers:
+
+- Up to 3 face JPEGs (base64-encoded, in enrollment order)
+- The latest enrollment time as `updated_at`
+
+Non-ENROLL audit entries (recognize / stream-check) are never used for backfilling pictures.
+
+**When it runs**: At startup, in `di/wire.go` after bucket creation and before the API starts serving.
+
+**Return value**: Number of users that were backfilled. Errors are logged as warnings (non-fatal).
+
+**Algorithm**:
+1. Open bbolt write transaction
+2. Scan all Audit entries (newest-first), collect ENROLL entries with non-empty `face_image`
+3. Group by user name; for each group keep up to 3 pictures (first 3 encountered) and the latest `time`
+4. For each user in the Faces bucket: if pictures are empty AND `updated_at` is empty → apply backfill data and rewrite the value
