@@ -133,6 +133,24 @@ func (r *CandidateRepository) ListAll() ([]*domain.Candidate, error) {
 	return candidates, err
 }
 
+// CountAll returns the total number of candidates.
+func (r *CandidateRepository) CountAll() (int, error) {
+	var count int
+	err := r.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(candidatesBucket))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			_ = k
+			_ = v
+			count++
+			return nil
+		})
+	})
+	return count, err
+}
+
 // GroupBySimilarity groups candidates by pairwise cosine similarity >= threshold.
 func (r *CandidateRepository) GroupBySimilarity(threshold float32) ([]*domain.CandidateGroup, error) {
 	if threshold <= 0 {
