@@ -392,3 +392,83 @@ func TestStreamCheckUnreachable_E2E(t *testing.T) {
 	}
 	t.Log("=== PASS: unreachable stream correctly reported ===")
 }
+
+// TestRTSPNoFaceAuditEntry_E2E verifies that a stream-check with a solid-color
+// frame writes an audit entry with status="no_face" and the full frame image.
+func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
+	t.Log("=== Step 1: Streaming a solid-color (no-face) frame ===")
+	solid, err := solidJPEG(640, 480)
+	if err != nil {
+		t.Fatalf("build solid frame: %v", err)
+	}
+	rtspMock.setFrame(solid)
+
+	t.Log("=== Step 2: Checking the RTSP stream ===")
+	result, status, _, err := streamCheck(rtspURL)
+	if err != nil {
+		t.Fatalf("stream-check failed: %v", err)
+	}
+	t.Logf("HTTP %d: %+v", status, result)
+
+	if result.Status != "not ok" {
+		t.Errorf("expected status='not ok', got %q", result.Status)
+	}
+	if result.Reason != "No face detected" {
+		t.Errorf("expected reason='No face detected', got %q", result.Reason)
+	}
+
+	t.Log("=== Step 3: Verifying audit entry with status=no_face ===")
+	auditResp, err := http.Get(rtspBaseURL + "/api/audit?per_page=50")
+	if err != nil {
+		t.Fatalf("audit request failed: %v", err)
+	}
+	defer auditResp.Body.Close()
+	var auditOut struct {
+		Entries []struct {
+			Time      string `json:"time"`
+			Endpoint  string `json:"endpoint"`
+			Name      string `json:"name"`
+			Similarity float32 `json:"similarity"`
+			Matched   bool    `json:"matched"`
+			Status    string  `json:"status"`
+			FaceImage string  `json:"face_image"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(auditResp.Body).Decode(&auditOut); err != nil {
+		t.Fatalf("decode /api/audit response: %v", err)
+	}
+
+	var noFaceEntry *struct {
+		Time       string  `json:"time"`
+		Endpoint   string  `json:"endpoint"`
+		Name       string  `json:"name"`
+		Similarity float32 `json:"similarity"`
+		Matched    bool    `json:"matched"`
+		Status     string  `json:"status"`
+		FaceImage  string  `json:"face_image"`
+	}
+	for i, e := range auditOut.Entries {
+		if e.Endpoint == "stream-check" && e.Status == "no_face" {
+			noFaceEntry = &auditOut.Entries[i]
+			break
+		}
+	}
+	if noFaceEntry == nil {
+		t.Errorf("expected a no_face audit entry in: %+v", auditOut.Entries)
+		return
+	}
+	// Verify audit entry fields
+	if noFaceEntry.Name != "" {
+		t.Errorf("no_face entry Name = %q, want empty", noFaceEntry.Name)
+	}
+	if noFaceEntry.Similarity != 0 {
+		t.Errorf("no_face entry Similarity = %f, want 0", noFaceEntry.Similarity)
+	}
+	if noFaceEntry.FaceImage == "" {
+		t.Error("no_face entry has empty face_image (expected full frame)")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, noFaceEntry.Time); err != nil {
+		t.Errorf("no_face entry has invalid time %q: %v", noFaceEntry.Time, err)
+	}
+	t.Log("=== PASS: RTSP no-face writes audit entry with status=no_face and full frame ===")
+}
