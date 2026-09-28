@@ -40,9 +40,17 @@ type AuditEntry struct {
 	Name       string    `json:"name"`
 	Similarity float32   `json:"similarity"`
 	Matched    bool      `json:"matched"`
+	Status     string    `json:"status"`
 	DurationMs int64     `json:"duration_ms"`
 	FaceImage  string    `json:"face_image"` // base64-encoded cropped face JPEG
 }
+
+// Audit entry status constants.
+const (
+	AuditStatusMatched    = "matched"
+	AuditStatusNotMatched = "not_matched"
+	AuditStatusNoFace     = "no_face"
+)
 
 // --- Utility functions ---
 

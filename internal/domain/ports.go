@@ -32,6 +32,8 @@ type CandidateRepository interface {
 	DeleteByID(ids []string) error
 	// GroupBySimilarity groups candidates by pairwise cosine similarity >= threshold.
 	GroupBySimilarity(threshold float32) ([]*CandidateGroup, error)
+	// CountAll returns the total number of candidates.
+	CountAll() (int, error)
 }
 
 // AuditRepository manages audit trail entries.
@@ -44,6 +46,8 @@ type AuditRepository interface {
 	ListPaginated(opts ListPaginatedOpts) ([]AuditEntry, int, error)
 	// CountAll returns the total number of audit entries.
 	CountAll() (int, error)
+	// ListUnmatched returns the newest n unmatched entries (not_matched only).
+	ListUnmatched(n int) ([]AuditEntry, error)
 	// ComputeStats returns aggregate statistics from all audit entries.
 	ComputeStats() (Stats, error)
 }
@@ -63,6 +67,7 @@ type Stats struct {
 	TotalMatched    int
 	TotalNoFace     int
 	TotalNotMatched int
+	TotalCollected  int
 	LastMatched     *time.Time
 }
 
@@ -201,5 +206,6 @@ type StatsResponse struct {
 	TotalMatched    int     `json:"total_matched"`
 	TotalNoFace     int     `json:"total_no_face"`
 	TotalNotMatched int     `json:"total_not_matched"`
+	TotalCollected  int     `json:"total_collected"`
 	LastMatched     *string `json:"last_matched"`
 }

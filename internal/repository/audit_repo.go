@@ -53,6 +53,7 @@ func (r *AuditRepository) Append(entries []domain.AuditEntry) error {
 				Name:       e.Name,
 				Similarity: e.Similarity,
 				Matched:    e.Matched,
+				Status:     e.Status,
 				DurationMs: e.DurationMs,
 				FaceImage:  e.FaceImage,
 			})
@@ -84,12 +85,16 @@ func (r *AuditRepository) Recent(n int) ([]domain.AuditEntry, error) {
 			if err := json.Unmarshal(v, &j); err != nil {
 				continue
 			}
+			if j.Status == "" {
+				j.Status = "matched"
+			}
 			entries = append(entries, domain.AuditEntry{
 				Time:       parseTime(j.Time),
 				Endpoint:   j.Endpoint,
 				Name:       j.Name,
 				Similarity: j.Similarity,
 				Matched:    j.Matched,
+				Status:     j.Status,
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
 			})
@@ -120,12 +125,16 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 			if err := json.Unmarshal(v, &j); err != nil {
 				continue
 			}
+			if j.Status == "" {
+				j.Status = "matched"
+			}
 			e := domain.AuditEntry{
 				Time:       parseTime(j.Time),
 				Endpoint:   j.Endpoint,
 				Name:       j.Name,
 				Similarity: j.Similarity,
 				Matched:    j.Matched,
+				Status:     j.Status,
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
 			}
@@ -183,6 +192,46 @@ func (r *AuditRepository) CountAll() (int, error) {
 	return count, err
 }
 
+// ListUnmatched returns the newest n entries that are not matched
+// (status == "not_matched"). Returns newest first.
+func (r *AuditRepository) ListUnmatched(n int) ([]domain.AuditEntry, error) {
+	if n <= 0 {
+		n = 100
+	}
+	var entries []domain.AuditEntry
+	err := r.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(auditBucket))
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Last(); k != nil && len(entries) < n; k, v = c.Prev() {
+			var j auditEntryJSON
+			if err := json.Unmarshal(v, &j); err != nil {
+				continue
+			}
+			if j.Status == "" {
+				j.Status = "matched"
+			}
+			if j.Status != domain.AuditStatusNotMatched {
+				continue
+			}
+			entries = append(entries, domain.AuditEntry{
+				Time:       parseTime(j.Time),
+				Endpoint:   j.Endpoint,
+				Name:       j.Name,
+				Similarity: j.Similarity,
+				Matched:    j.Matched,
+				Status:     j.Status,
+				DurationMs: j.DurationMs,
+				FaceImage:  j.FaceImage,
+			})
+		}
+		return nil
+	})
+	return entries, err
+}
+
 // ComputeStats returns aggregate statistics from all audit entries.
 func (r *AuditRepository) ComputeStats() (domain.Stats, error) {
 	var entries []domain.AuditEntry
@@ -197,12 +246,16 @@ func (r *AuditRepository) ComputeStats() (domain.Stats, error) {
 			if err := json.Unmarshal(v, &j); err != nil {
 				continue
 			}
+			if j.Status == "" {
+				j.Status = "matched"
+			}
 			entries = append(entries, domain.AuditEntry{
 				Time:       parseTime(j.Time),
 				Endpoint:   j.Endpoint,
 				Name:       j.Name,
 				Similarity: j.Similarity,
 				Matched:    j.Matched,
+				Status:     j.Status,
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
 			})
@@ -219,14 +272,15 @@ func (r *AuditRepository) ComputeStats() (domain.Stats, error) {
 
 	var lastMatched time.Time
 	for _, e := range entries {
-		if e.Matched {
+		switch e.Status {
+		case domain.AuditStatusMatched:
 			stats.TotalMatched++
 			if e.Time.After(lastMatched) {
 				lastMatched = e.Time
 			}
-		} else if e.Name == "" {
+		case domain.AuditStatusNoFace:
 			stats.TotalNoFace++
-		} else {
+		case domain.AuditStatusNotMatched:
 			stats.TotalNotMatched++
 		}
 	}
@@ -247,6 +301,7 @@ type auditEntryJSON struct {
 	Name       string  `json:"name"`
 	Similarity float32 `json:"similarity"`
 	Matched    bool    `json:"matched"`
+	Status     string  `json:"status"`
 	DurationMs int64   `json:"duration_ms"`
 	FaceImage  string  `json:"face_image,omitempty"`
 }
