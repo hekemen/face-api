@@ -64,6 +64,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 
 	// Inject RTSP reader into service for stream-based operations
 	faceService.WithRTSPReader(rtspReader)
+	faceService.WithLogger(&cfg.Logger)
 
 	mux := http.NewServeMux()
 	handlers.RegisterHandlers(mux)

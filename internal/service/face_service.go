@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"h2hsecure.com/face/internal/domain"
 )
 
@@ -20,6 +21,7 @@ type FaceServiceImpl struct {
 	processor   domain.FaceProcessor
 	rtspReader  domain.RTSPReader
 	threshold   float32
+	logger      *zerolog.Logger
 	mu          sync.Mutex
 }
 
@@ -33,6 +35,29 @@ func New(users domain.UserRepository, candidates domain.CandidateRepository,
 		processor:  processor,
 		threshold:  threshold,
 	}
+}
+
+// WithLogger sets the logger for the service.
+func (s *FaceServiceImpl) WithLogger(l *zerolog.Logger) *FaceServiceImpl {
+	s.logger = l
+	return s
+}
+
+// logf writes a structured log line if the logger is set.
+func (s *FaceServiceImpl) logf(msg string, keysAndValues ...interface{}) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Info().Fields(toFields(keysAndValues)).Msg(msg)
+}
+
+// toFields converts a flat []interface{} pair list into a map[string]interface{}.
+func toFields(kv []interface{}) map[string]interface{} {
+	f := make(map[string]interface{}, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		f[kv[i].(string)] = kv[i+1]
+	}
+	return f
 }
 
 // WithRTSPReader sets the RTSP reader for stream-based operations.
@@ -132,12 +157,16 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 		return nil, fmt.Errorf("face detection: %w", err)
 	}
 
+	s.logf("face found", "timestamp", time.Now().Format(time.RFC3339))
+
 	embedding := crop.Embedding
 
 	users, err := s.users.ListAll()
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
+
+	s.logf("checking users", "user_count", len(users), "timestamp", time.Now().Format(time.RFC3339))
 
 	var bestName string
 	var bestScore float32 = -1.0
@@ -159,6 +188,8 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 	if matched {
 		result.Name = bestName
 	}
+
+	s.logf("validation result", "name", result.Name, "similarity", bestScore, "matched", matched, "timestamp", time.Now().Format(time.RFC3339))
 
 	// Audit entry
 	_ = s.audit.Append([]domain.AuditEntry{{
@@ -197,12 +228,16 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		}, nil
 	}
 
+	s.logf("face found", "timestamp", time.Now().Format(time.RFC3339))
+
 	embedding := crop.Embedding
 
 	users, err := s.users.ListAll()
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
+
+	s.logf("checking users", "user_count", len(users), "timestamp", time.Now().Format(time.RFC3339))
 
 	var bestName string
 	var highestScore float32 = -1.0
@@ -216,6 +251,8 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 
 	matched := highestScore >= s.threshold
 	dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+
+	s.logf("validation result", "name", bestName, "similarity", highestScore, "matched", matched, "timestamp", time.Now().Format(time.RFC3339))
 
 	// Audit entry
 	_ = s.audit.Append([]domain.AuditEntry{{
