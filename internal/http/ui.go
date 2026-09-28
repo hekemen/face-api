@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sort"
 	"strconv"
 	"time"
@@ -69,8 +68,6 @@ func (h *UIHandler) handleUI(w http.ResponseWriter, r *http.Request) {
 		h.handleUIAudit(w, r)
 	case "stats":
 		h.handleUIStats(w, r)
-	case "candidates":
-		h.handleUICandidates(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -145,8 +142,8 @@ type uiPageData struct {
 	DashAudit          []domain.AuditEntry
 	DashCandidates     int
 	DashGroups         int
-	Candidates         []*domain.CandidateGroup
-	AllCandidates      []domain.Candidate
+	UnmatchedEntries   []domain.AuditEntry
+	TotalCollected     int
 	GitVersion         string
 	GitHubURL          string
 }
@@ -192,6 +189,7 @@ func (h *UIHandler) renderIndex(w http.ResponseWriter, r *http.Request) {
 			TotalMatched:    stats.TotalMatched,
 			TotalNoFace:     stats.TotalNoFace,
 			TotalNotMatched: stats.TotalNotMatched,
+			TotalCollected:  h.svc.CandidateCount(),
 			LastMatched:     lastMatchedStr,
 		}
 		entries, _ := h.svc.RecentAudit(10)
@@ -281,9 +279,14 @@ func (h *UIHandler) handleUIAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	unmatched, _ := h.svc.ListUnmatched(100)
+	totalCollected := h.svc.CandidateCount()
+
 	h.renderTemplate(w, "audit.html", uiPageData{
-		Entries: entries,
-		Count:   len(entries),
+		Entries:          entries,
+		Count:            len(entries),
+		UnmatchedEntries: unmatched,
+		TotalCollected:   totalCollected,
 	})
 }
 
@@ -307,52 +310,10 @@ func (h *UIHandler) handleUIStats(w http.ResponseWriter, r *http.Request) {
 		TotalMatched:    stats.TotalMatched,
 		TotalNoFace:     stats.TotalNoFace,
 		TotalNotMatched: stats.TotalNotMatched,
+		TotalCollected:  h.svc.CandidateCount(),
 		LastMatched:     lastMatchedStr,
 	}
 	h.renderTemplate(w, "stats.html", uiPageData{Stats: sr})
-}
-
-// --- Candidates page ---
-
-func (h *UIHandler) handleUICandidates(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		groups, err := h.svc.ListCandidates()
-		if err != nil {
-			h.renderTemplate(w, "candidates.html", uiPageData{Result: "Failed to read candidates", Class: "error"})
-			return
-		}
-		allCandidates := flattenCandidates(groups)
-		h.renderTemplate(w, "candidates.html", uiPageData{
-			Candidates:    groups,
-			AllCandidates: allCandidates,
-		})
-		return
-	}
-
-	// Handle promote form submission
-	name := r.FormValue("name")
-	id := r.FormValue("id")
-	if name == "" || id == "" {
-		h.renderTemplate(w, "candidates.html", uiPageData{Result: "Missing name or candidate ID", Class: "error"})
-		return
-	}
-
-	// Proxy to the promote API
-	result, class := h.proxyAPI(w, r, "/candidates/promote?id="+url.QueryEscape(id))
-	page := uiPageData{Result: result, Class: class}
-	if class == "" {
-		var resp domain.EnrollmentResult
-		if err := json.Unmarshal([]byte(result), &resp); err == nil {
-			page.Result = "Promoted: " + resp.Name
-		}
-	}
-
-	groups, _ := h.svc.ListCandidates()
-	allCandidates := flattenCandidates(groups)
-	page.Candidates = groups
-	page.AllCandidates = allCandidates
-
-	h.renderTemplate(w, "candidates.html", page)
 }
 
 // --- Utility ---
@@ -389,14 +350,6 @@ func userSliceToInfos(users []*domain.User) []domain.UserInfo {
 				break
 			}
 		}
-	}
-	return result
-}
-
-func flattenCandidates(groups []*domain.CandidateGroup) []domain.Candidate {
-	var result []domain.Candidate
-	for _, g := range groups {
-		result = append(result, g.Faces...)
 	}
 	return result
 }

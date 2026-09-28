@@ -12,6 +12,12 @@
     <option value="recognize">recognize</option>
     <option value="stream-check">stream-check</option>
   </select>
+  <select id="filterStatus" style="padding:0.4rem 0.6rem;">
+    <option value="">All statuses</option>
+    <option value="matched">Matched</option>
+    <option value="not_matched">Not matched</option>
+    <option value="no_face">No face</option>
+  </select>
   <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
     <input type="radio" name="matched" value="" checked /> All
   </label>
@@ -33,7 +39,7 @@
 <script>
 (function() {
   'use strict';
-  var state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '' };
+  var state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '', status: '' };
   var usersLoaded = false;
 
   function buildURL() {
@@ -41,135 +47,143 @@
     if (state.user) u += '&name=' + encodeURIComponent(state.user);
     if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
     if (state.matched) u += '&matched=' + encodeURIComponent(state.matched);
+    if (state.status) u += '&status=' + encodeURIComponent(state.status);
     return u;
   }
 
+  function statusBadge(status) {
+    switch (status) {
+      case 'matched': return '<span class="badge badge-success">● Matched</span>';
+      case 'not_matched': return '<span class="badge badge-warning">● Not matched</span>';
+      case 'no_face': return '<span class="badge badge-danger">● No face</span>';
+      default: return '';
+    }
+  }
+
+  function promoteForm(entry) {
+    if (entry.status !== 'not_matched') return '';
+    return '<form action="../candidates/promote" method="post" style="margin:0.25rem 0;display:inline-flex;gap:0.3rem;align-items:center;">' +
+      '<input type="hidden" name="id" value="' + entry.time + '">' +
+      '<input type="text" name="name" placeholder="Name" style="padding:0.25rem;font-size:0.8rem;width:100px;">' +
+      '<button type="submit" style="padding:0.25rem 0.5rem;font-size:0.8rem;">Promote</button>' +
+      '</form>';
+  }
+
+  function renderEntry(entry) {
+    var img = entry.face_image
+      ? '<img src="' + entry.face_image + '" class="face-thumb">'
+      : '<div class="face-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
+    var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
+    var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
+    return '<div class="entry" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
+      img +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-weight:600;">' + name + '</div>' +
+        '<div class="entry-time">' + entry.time + '</div>' +
+        promoteForm(entry) +
+      '</div>' +
+      '<div style="text-align:right;min-width:100px;">' +
+        statusBadge(entry.status) +
+        '<div style="font-size:0.8rem;color:var(--pico-muted-color);">similarity: ' + similarity + '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function render() {
+    fetch(buildURL())
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        document.getElementById('auditInfo').textContent =
+          'Showing ' + data.entries.length + ' of ' + data.total_count + ' entries (page ' + data.page + '/' + data.total_pages + ')';
+
+        var content = document.getElementById('auditContent');
+        if (data.entries.length === 0) {
+          content.innerHTML = '<p style="color:var(--pico-muted-color);">No entries found.</p>';
+        } else {
+          content.innerHTML = data.entries.map(renderEntry).join('');
+        }
+
+        // Render pagination
+        var pag = document.getElementById('pagination');
+        pag.innerHTML = '';
+        if (data.page > 1) {
+          var prev = document.createElement('button');
+          prev.className = 'page-btn';
+          prev.textContent = '← Prev';
+          prev.addEventListener('click', function() { state.page--; render(); });
+          pag.appendChild(prev);
+        }
+        var pBtn = document.createElement('span');
+        pBtn.className = 'page-btn active';
+        pBtn.textContent = data.page;
+        pag.appendChild(pBtn);
+        if (data.page < data.total_pages) {
+          var next = document.createElement('button');
+          next.className = 'page-btn';
+          next.textContent = 'Next →';
+          next.addEventListener('click', function() { state.page++; render(); });
+          pag.appendChild(next);
+        }
+      })
+      .catch(function(err) {
+        document.getElementById('auditInfo').textContent = 'Error loading audit: ' + err;
+      });
+  }
+
+  // Load users into filter dropdown
   function loadUsers() {
     if (usersLoaded) return;
-    fetch('../users')
-      .then(function(resp) { return resp.json(); })
+    usersLoaded = true;
+    fetch('../api/audit?per_page=1')
+      .then(function(r) { return r.json(); })
       .then(function(data) {
+        var names = new Set();
+        data.entries.forEach(function(e) { if (e.name) names.add(e.name); });
         var sel = document.getElementById('filterUser');
-        if (data && data.users) {
-          data.users.forEach(function(u) {
-            var opt = document.createElement('option');
-            opt.value = u.name;
-            opt.textContent = u.name;
-            sel.appendChild(opt);
-          });
-        }
-        usersLoaded = true;
+        Array.from(names).sort().forEach(function(n) {
+          var opt = document.createElement('option');
+          opt.value = n;
+          opt.textContent = n;
+          sel.appendChild(opt);
+        });
       })
-      .catch(function() { usersLoaded = true; });
+      .catch(function() {});
   }
 
-  function getMatchedRadio() {
-    var radios = document.querySelectorAll('input[name="matched"]');
-    for (var i = 0; i < radios.length; i++) {
-      if (radios[i].checked) return radios[i].value;
-    }
-    return '';
-  }
-
-  function renderAudit(data) {
-    var info = document.getElementById('auditInfo');
-    var content = document.getElementById('auditContent');
-    if (!data || data.entries.length === 0) {
-      info.textContent = 'No audit entries found.';
-      content.innerHTML = '';
-      document.getElementById('pagination').innerHTML = '';
-      return;
-    }
-
-    var totalPages = data.total_pages;
-    info.textContent = 'Showing ' + data.entries.length + ' of ' + data.total_count + ' entries (page ' + state.page + ' of ' + totalPages + ')';
-
-    var html = '<table><thead><tr><th>Time</th><th>Endpoint</th><th>Name</th><th>Similarity</th><th>Matched</th><th>Face</th></tr></thead><tbody>';
-    data.entries.forEach(function(e) {
-      html += '<tr>';
-      html += '<td>' + new Date(e.time).toLocaleString() + '</td>';
-      html += '<td>' + e.endpoint + '</td>';
-      html += '<td>' + (e.name || '-') + '</td>';
-      html += '<td>' + e.similarity.toFixed(3) + '</td>';
-      html += '<td>' + (e.matched ? 'Yes' : 'No') + '</td>';
-      html += '<td>' + (e.face_image ? '<img class="face-thumb" src="data:image/jpeg;base64,' + e.face_image + '">' : '-') + '</td>';
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-    content.innerHTML = html;
-    renderPagination(data.total_pages);
-  }
-
-  function renderPagination(totalPages) {
-    var nav = document.getElementById('pagination');
-    if (totalPages <= 1) { nav.innerHTML = ''; return; }
-
-    var html = '';
-    if (state.page > 1) {
-      html += '<button class="page-btn" data-page="' + (state.page - 1) + '">← Prev</button>';
-    }
-    var start = Math.max(1, state.page - 2);
-    var end = Math.min(totalPages, start + 4);
-    if (end - start < 4) start = Math.max(1, end - 4);
-    for (var i = start; i <= end; i++) {
-      html += '<button class="page-btn' + (i === state.page ? ' active' : '') + '" data-page="' + i + '">' + i + '</button>';
-    }
-    if (state.page < totalPages) {
-      html += '<button class="page-btn" data-page="' + (state.page + 1) + '">Next →</button>';
-    }
-    nav.innerHTML = html;
-  }
-
-  function loadAudit() {
-    fetch(buildURL())
-      .then(function(resp) { return resp.json(); })
-      .then(function(data) { renderAudit(data); })
-      .catch(function(err) { console.error('Audit load failed:', err); });
-  }
-
-  function applyState() {
-    state.page = 1;
-    state.user = document.getElementById('filterUser').value;
-    state.endpoint = document.getElementById('filterEndpoint').value;
-    state.matched = getMatchedRadio();
-    loadAudit();
-  }
-
-  // Event listeners
-  document.getElementById('filterUser').addEventListener('change', applyState);
-  document.getElementById('filterEndpoint').addEventListener('change', applyState);
-  document.querySelectorAll('input[name="matched"]').forEach(function(radio) {
-    radio.addEventListener('change', applyState);
+  // Bind filters
+  document.getElementById('filterUser').addEventListener('change', function() {
+    state.user = this.value; state.page = 1; render();
   });
-
+  document.getElementById('filterEndpoint').addEventListener('change', function() {
+    state.endpoint = this.value; state.page = 1; render();
+  });
+  document.getElementById('filterStatus').addEventListener('change', function() {
+    state.status = this.value; state.page = 1; render();
+  });
+  document.querySelectorAll('input[name="matched"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      state.matched = this.value; state.page = 1; render();
+    });
+  });
   document.getElementById('clearFilters').addEventListener('click', function() {
+    state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '', status: '' };
     document.getElementById('filterUser').value = '';
     document.getElementById('filterEndpoint').value = '';
+    document.getElementById('filterStatus').value = '';
     document.querySelector('input[name="matched"][value=""]').checked = true;
-    state.page = 1;
-    state.user = '';
-    state.endpoint = '';
-    state.matched = '';
-    loadAudit();
+    render();
   });
 
-  document.getElementById('pagination').addEventListener('click', function(e) {
-    var btn = e.target.closest('.page-btn');
-    if (!btn) return;
-    var p = parseInt(btn.getAttribute('data-page'), 10);
-    if (p >= 1) {
-      state.page = p;
-      loadAudit();
-    }
-  });
-
-  // Auto-refresh every 30s (respects current filters/page)
-  setInterval(loadAudit, 30000);
-
-  // Initial load
+  render();
   loadUsers();
-  loadAudit();
 })();
 </script>
+<style>
+.badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.badge-success { background: #d4edda; color: #155724; }
+.badge-warning { background: #fff3cd; color: #856404; }
+.badge-danger { background: #f8d7da; color: #721c24; }
+.entry { display: flex; gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+</style>
 {{template "foot" .}}
 {{template "clockScript" .}}

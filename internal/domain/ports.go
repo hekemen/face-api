@@ -54,11 +54,12 @@ type AuditRepository interface {
 
 // ListPaginatedOpts holds filtering and pagination parameters.
 type ListPaginatedOpts struct {
-	NameFilter   string // substring match on name (case-insensitive)
+	NameFilter     string // substring match on name (case-insensitive)
 	EndpointFilter string // exact match on endpoint
 	MatchedFilter  string // "yes"=matched only, "no"=not matched only, ""=all
-	Page         int
-	PerPage      int
+	StatusFilter   string // exact match on status: matched, not_matched, no_face
+	Page           int
+	PerPage        int
 }
 
 // Stats holds aggregate statistics from the audit log.

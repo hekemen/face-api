@@ -360,6 +360,7 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 	nameFilter := r.URL.Query().Get("name")
 	endpointFilter := r.URL.Query().Get("endpoint")
 	matchedFilter := r.URL.Query().Get("matched")
+	statusFilter := r.URL.Query().Get("status")
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 
@@ -377,6 +378,7 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 		NameFilter:     nameFilter,
 		EndpointFilter: endpointFilter,
 		MatchedFilter:  matchedFilter,
+		StatusFilter:   statusFilter,
 		Page:           page,
 		PerPage:        perPage,
 	})

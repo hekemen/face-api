@@ -35,6 +35,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 .stat-matched .count { color: var(--pico-success); }
 .stat-no-face .count { color: var(--pico-warning); }
 .stat-not-matched .count { color: var(--pico-error); }
+.stat-collected .count { color: #6f42c1; }
 .header-controls { display: flex; align-items: center; gap: 0.75rem; }
 .theme-toggle, .auto-toggle { background: none; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: inherit; transition: border-color 0.2s; }
 .theme-toggle:hover, .auto-toggle:hover { border-color: var(--pico-primary); }
@@ -86,6 +87,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
       <span class="header-stat stat-matched"><span class="count" id="statMatched">{{.DashStats.TotalMatched}}</span> ✓</span>
       <span class="header-stat stat-no-face"><span class="count" id="statNoFace">{{.DashStats.TotalNoFace}}</span> no face</span>
       <span class="header-stat stat-not-matched"><span class="count" id="statNotMatched">{{.DashStats.TotalNotMatched}}</span> unmatched</span>
+      <span class="header-stat stat-collected"><span class="count" id="statCollected">{{.DashStats.TotalCollected}}</span> collected</span>
     </div>
     {{end}}
   </div>
@@ -214,6 +216,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
         if (data.total_matched !== undefined) document.getElementById('statMatched').textContent = data.total_matched;
         if (data.total_no_face !== undefined) document.getElementById('statNoFace').textContent = data.total_no_face;
         if (data.total_not_matched !== undefined) document.getElementById('statNotMatched').textContent = data.total_not_matched;
+        if (data.total_collected !== undefined) document.getElementById('statCollected').textContent = data.total_collected;
       })
       .catch(function() {});
   }
