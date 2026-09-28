@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"sync"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
@@ -23,7 +24,9 @@ import (
 // Reader connects to an RTSP server, reads one decoded frame (MJPEG or H.264)
 // within the timeout, and returns it as JPEG bytes. If the stream uses any
 // other codec, it returns a descriptive error without reading any frames.
-type Reader struct{}
+type Reader struct {
+	mu sync.Mutex
+}
 
 // New creates a new Reader.
 func New() *Reader {
@@ -33,6 +36,9 @@ func New() *Reader {
 // ReadFrame connects to an RTSP server and returns the first decoded frame as
 // JPEG bytes. The timeout applies to the full connection + frame capture.
 func (r *Reader) ReadFrame(url string, timeout time.Duration) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	u, err := base.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("invalid RTSP URL: %w", err)
