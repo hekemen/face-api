@@ -217,12 +217,30 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 
 	crop, err := s.processor.DetectAndCrop(imageData)
 	if err != nil {
-		reason := "No face detected within 3 seconds"
+		reason := "No face detected"
 		// For RTSP connection errors, the caller should handle it.
+		// Connection errors do NOT write an audit entry.
 		if isConnectionError(err) {
 			reason = "Failed to connect to RTSP stream"
+			s.logf("no face detected", "reason", reason, "timestamp", time.Now().Format(time.RFC3339))
+			return &domain.StreamCheckResult{
+				OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+				Status:            "not ok",
+				Reason:            reason,
+			}, nil
 		}
-		s.logf("no face detected", "reason", reason, "timestamp", time.Now().Format(time.RFC3339))
+		// No-face: write audit entry with full frame.
+		_ = s.audit.Append([]domain.AuditEntry{{
+			Time:       time.Now(),
+			Endpoint:   "stream-check",
+			Name:       "",
+			Similarity: 0,
+			Matched:    false,
+			Status:     domain.AuditStatusNoFace,
+			DurationMs: time.Since(start).Milliseconds(),
+			FaceImage:  string(imageData),
+		}})
+		s.logf("no face detected", "timestamp", time.Now().Format(time.RFC3339))
 		return &domain.StreamCheckResult{
 			OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
 			Status:            "not ok",
@@ -256,18 +274,18 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 
 	s.logf("validation result", "name", bestName, "similarity", highestScore, "matched", matched, "timestamp", time.Now().Format(time.RFC3339))
 
-	// Audit entry
-	_ = s.audit.Append([]domain.AuditEntry{{
-		Time:       time.Now(),
-		Endpoint:   "stream-check",
-		Name:       bestName,
-		Similarity: highestScore,
-		Matched:    matched,
-		DurationMs: dur.DurationMs,
-		FaceImage:  string(crop.Data),
-	}})
-
 	if matched {
+		// Audit entry for matched face.
+		_ = s.audit.Append([]domain.AuditEntry{{
+			Time:       time.Now(),
+			Endpoint:   "stream-check",
+			Name:       bestName,
+			Similarity: highestScore,
+			Matched:    true,
+			Status:     domain.AuditStatusMatched,
+			DurationMs: dur.DurationMs,
+			FaceImage:  string(crop.Data),
+		}})
 		return &domain.StreamCheckResult{
 			OperationDuration: dur,
 			Status:            "ok",
@@ -277,6 +295,18 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			FaceImage:         string(crop.Data),
 		}, nil
 	}
+
+	// Audit entry for not-matched face.
+	_ = s.audit.Append([]domain.AuditEntry{{
+		Time:       time.Now(),
+		Endpoint:   "stream-check",
+		Name:       "",
+		Similarity: highestScore,
+		Matched:    false,
+		Status:     domain.AuditStatusNotMatched,
+		DurationMs: dur.DurationMs,
+		FaceImage:  string(crop.Data),
+	}})
 
 	// Auto-collect unmatched face as candidate
 	candidate := &domain.Candidate{
@@ -291,7 +321,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 	return &domain.StreamCheckResult{
 		OperationDuration: dur,
 		Status:            "not ok",
-		Reason:            "No face detected within 3 seconds",
+		Reason:            "Face detected but similarity below threshold",
 		Similarity:        highestScore,
 		Matched:           false,
 		FaceImage:         string(crop.Data),
