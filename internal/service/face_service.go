@@ -81,6 +81,7 @@ func (s *FaceServiceImpl) CheckStream(rtspURL string) (*domain.StreamCheckResult
 		if isNoFaceError(err) {
 			reason = "No face detected within 3 seconds"
 		}
+		s.logf("stream check failed", "reason", reason, "timestamp", time.Now().Format(time.RFC3339))
 		return &domain.StreamCheckResult{
 			OperationDuration: domain.OperationDuration{DurationMs: 0},
 			Status:            "not ok",
@@ -221,6 +222,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		if isConnectionError(err) {
 			reason = "Failed to connect to RTSP stream"
 		}
+		s.logf("no face detected", "reason", reason, "timestamp", time.Now().Format(time.RFC3339))
 		return &domain.StreamCheckResult{
 			OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
 			Status:            "not ok",

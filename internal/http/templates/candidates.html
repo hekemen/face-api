@@ -5,12 +5,7 @@
 
 <!-- Collector status -->
 <div class="result" style="margin-bottom: 1rem; padding: 0.75rem;">
-  {{if .CollectorRunning}}
-    <span style="color: #0f0; font-weight: bold;">●</span> Collector is **running** — collecting unknown faces from the RTSP stream.<br>
-    Started: <strong>{{.CollectorStartedAt.Format "2006-01-02 15:04:05"}}</strong>
-  {{else}}
-    <span style="color: #f55; font-weight: bold;">●</span> Collector is **stopped**. Toggle it on in Home Assistant.
-  {{end}}
+  <span style="color: #0f0; font-weight: bold;">●</span> Auto-collection is **active** — unmatched faces from the RTSP stream are stored here for review.
 </div>
 
 <!-- Candidates grid -->
