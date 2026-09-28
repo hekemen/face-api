@@ -72,10 +72,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 }
 
 // RequestLogging wraps a handler with JSON request logging.
-// Skips /healthz and /readyz probes.
+// Skips /healthz, /readyz probes, and /ui/ static assets.
 func RequestLogging(next http.Handler, logger zerolog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || strings.HasPrefix(r.URL.Path, "/ui/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -212,10 +212,33 @@ func (h *Handlers) handleRecognize(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
-	imageData, err := decodeImageFromRequest(r, "image")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	var imageData []byte
+
+	// If rtsp_url is provided, capture a frame from the stream.
+	rtspURL := r.FormValue("rtsp_url")
+	if rtspURL != "" {
+		if h.rtspReader == nil {
+			writeError(w, http.StatusBadRequest, "RTSP reader not configured")
+			return
+		}
+		var err error
+		imageData, err = h.rtspReader.ReadFrame(rtspURL, 3*time.Second)
+		if err != nil {
+			msg := err.Error()
+			if strings.Contains(strings.ToLower(msg), "no face detected") {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	} else {
+		var err error
+		imageData, err = decodeImageFromRequest(r, "image")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	result, err := h.svc.RecognizeImage(imageData)
