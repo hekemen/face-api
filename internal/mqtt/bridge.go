@@ -215,6 +215,8 @@ func (b *Bridge) worker() {
 				}
 			}
 
+			b.log.Info().Str("status", result.Status).Str("name", result.Name).Float32("similarity", result.Similarity).Bool("matched", result.Matched).Str("reason", result.Reason).Msg("stream check complete")
+
 			// Publish result JSON (includes name, matched, similarity, face_image).
 			resultJSON, _ := json.Marshal(result)
 			resultTopic := b.cfg.BaseTopic + "/result"
