@@ -58,34 +58,6 @@ func (h *Handlers) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /readyz", h.handleReadyz)
 }
 
-// --- Middleware ---
-
-// statusRecorder captures the response status code.
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
-	r.ResponseWriter.WriteHeader(code)
-}
-
-// RequestLogging wraps a handler with JSON request logging.
-// Skips /healthz, /readyz probes, and /ui/ static assets.
-func RequestLogging(next http.Handler, logger zerolog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || strings.HasPrefix(r.URL.Path, "/ui/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		logger.Info().Str("method", r.Method).Str("path", r.URL.Path).Int("status", rec.status).Int64("duration_ms", time.Since(start).Milliseconds()).Msg("request")
-	})
-}
-
 // --- Helper functions ---
 
 // decodeImageFromRequest reads a multipart form field as a file and returns bytes.

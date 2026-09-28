@@ -167,8 +167,11 @@ func (b *Bridge) Stop() {
 
 // onMessage handles incoming trigger messages.
 func (b *Bridge) onMessage(_ mqtt.Client, msg mqtt.Message) {
+	b.log.Info().Str("topic", msg.Topic()).Str("payload", string(msg.Payload())).Msg("trigger received")
+
 	payload := string(msg.Payload())
 	if payload == "" {
+		b.log.Warn().Msg("trigger message has empty payload, skipping")
 		return // skip empty messages
 	}
 
@@ -203,6 +206,7 @@ func (b *Bridge) worker() {
 			return
 		case <-b.queue:
 			rtspURL := b.rtspURL
+			b.log.Info().Str("rtsp_url", rtspURL).Msg("processing trigger")
 			result, err := b.check(rtspURL)
 			if err != nil {
 				result = &domain.StreamCheckResult{
