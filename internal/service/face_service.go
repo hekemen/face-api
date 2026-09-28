@@ -537,6 +537,18 @@ func (s *FaceServiceImpl) ComputeStats() (domain.Stats, error) {
 	return s.audit.ComputeStats()
 }
 
+func (s *FaceServiceImpl) CandidateCount() int {
+	count, err := s.candidates.CountAll()
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
+func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {
+	return s.audit.ListUnmatched(n)
+}
+
 // isConnectionError checks if an error is likely a connection issue.
 func isConnectionError(err error) bool {
 	e := err.Error()

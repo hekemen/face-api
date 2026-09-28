@@ -126,8 +126,12 @@ type FaceService interface {
 	RecentAudit(n int) ([]AuditEntry, error)
 	// ListAuditPaginated returns a page of audit entries with filtering.
 	ListAuditPaginated(opts ListPaginatedOpts) ([]AuditEntry, int, error)
+	// ListUnmatched returns the newest n unmatched entries.
+	ListUnmatched(n int) ([]AuditEntry, error)
 	// ComputeStats returns aggregate statistics from the audit log.
 	ComputeStats() (Stats, error)
+	// CandidateCount returns the total number of collected candidates.
+	CandidateCount() int
 }
 
 // --- Response types ---
