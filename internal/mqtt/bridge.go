@@ -28,20 +28,22 @@ type Config struct {
 	DeviceName      string
 	QueueDepth      int
 	DiscoveryPrefix string
+	RTSPURL         string
 }
 
 // Bridge manages the MQTT connection, Home Assistant discovery, trigger
 // subscription, and result publishing.
 type Bridge struct {
-	cfg    Config
-	check  CheckFunc
-	client mqtt.Client
-	log    zerolog.Logger
-	queue  chan struct{}
-	done   chan struct{}
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cfg     Config
+	check   CheckFunc
+	client  mqtt.Client
+	log     zerolog.Logger
+	rtspURL string
+	queue   chan struct{}
+	done    chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // New creates a new Bridge. Returns nil if cfg.BrokerURL is empty (MQTT disabled).
@@ -66,10 +68,11 @@ func New(cfg Config, check CheckFunc) (*Bridge, error) {
 	}
 
 	b := &Bridge{
-		cfg:    cfg,
-		check:  check,
-		queue:  make(chan struct{}, cfg.QueueDepth),
-		done:   make(chan struct{}),
+		cfg:     cfg,
+		check:   check,
+		queue:   make(chan struct{}, cfg.QueueDepth),
+		done:    make(chan struct{}),
+		rtspURL: cfg.RTSPURL,
 	}
 
 	// Set up MQTT client options.
@@ -199,7 +202,8 @@ func (b *Bridge) worker() {
 		case <-b.done:
 			return
 		case <-b.queue:
-			result, err := b.check("")
+			rtspURL := b.rtspURL
+			result, err := b.check(rtspURL)
 			if err != nil {
 				result = &domain.StreamCheckResult{
 					Status: "not ok",
