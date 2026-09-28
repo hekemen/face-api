@@ -77,8 +77,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		fhttp.SetAPIMux(mux)
 	}
 
-	// Wrap with request logging middleware (skips /healthz and /readyz).
-	handler := fhttp.RequestLogging(mux, cfg.Logger)
+	handler := mux
 
 	return &FaceAPI{
 		Handler:     handler,
