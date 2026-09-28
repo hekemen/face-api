@@ -302,8 +302,8 @@ func TestStreamCheckNoFace_E2E(t *testing.T) {
 	if result.Status != "not ok" {
 		t.Errorf("expected status='not ok', got %q (resp: %s)", result.Status, body)
 	}
-	if result.Reason != "No face detected within 3 seconds" {
-		t.Errorf("expected reason='No face detected within 3 seconds', got %q", result.Reason)
+	if result.Reason != "No face detected" {
+		t.Errorf("expected reason='No face detected', got %q", result.Reason)
 	}
 	t.Log("=== PASS: no face in stream correctly reported ===")
 }
