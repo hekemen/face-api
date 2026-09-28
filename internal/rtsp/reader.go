@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,10 +36,41 @@ func New() *Reader {
 
 // ReadFrame connects to an RTSP server and returns the first decoded frame as
 // JPEG bytes. The timeout applies to the full connection + frame capture.
+// Retries up to 2 times on transient connection timeouts (transient camera
+// slow-to-respond is common with Hikvision RTSP servers).
 func (r *Reader) ReadFrame(url string, timeout time.Duration) ([]byte, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	var lastErr error
+	for attempt := 0; attempt <= 2; attempt++ {
+		if attempt > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		data, err := r.readOnce(url, timeout)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		// Only retry on timeout/connect errors (transient).
+		if !isTransientRTSPError(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
 
+// isTransientRTSPError returns true if the error is likely a transient
+// connection timeout that a retry could resolve.
+func isTransientRTSPError(err error) bool {
+	e := strings.ToLower(err.Error())
+	return strings.Contains(e, "timeout") ||
+		strings.Contains(e, "i/o timeout") ||
+		strings.Contains(e, "deadline exceeded") ||
+		strings.Contains(e, "dial") ||
+		strings.Contains(e, "connection refused")
+}
+
+// readOnce performs a single RTSP connection attempt: connect, describe,
+// select codec, read one frame, and return it as JPEG bytes.
+func (r *Reader) readOnce(url string, timeout time.Duration) ([]byte, error) {
 	u, err := base.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("invalid RTSP URL: %w", err)
