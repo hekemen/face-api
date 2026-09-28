@@ -589,3 +589,101 @@ func TestRecognizeNoFace_E2E(t *testing.T) {
 		t.Errorf("expected 400 for no face detected, got %d. Response: %s", resp.StatusCode, string(body))
 	}
 }
+
+// TestAuditStatusField_E2E verifies that audit entries returned by the API
+// include the new `status` field introduced by the audit-candidate unification.
+func TestAuditStatusField_E2E(t *testing.T) {
+	t.Log("=== Verifying /api/audit entries include status field ===")
+	auditResp, err := http.Get(baseURL + "/api/audit?per_page=50")
+	if err != nil {
+		t.Fatalf("audit request failed: %v", err)
+	}
+	defer auditResp.Body.Close()
+	if auditResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(auditResp.Body)
+		t.Fatalf("expected 200 from /api/audit, got %d: %s", auditResp.StatusCode, string(body))
+	}
+
+	var out struct {
+		Entries []map[string]interface{} `json:"entries"`
+	}
+	if err := json.NewDecoder(auditResp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode /api/audit response: %v", err)
+	}
+	if len(out.Entries) == 0 {
+		t.Fatal("expected at least one audit entry")
+	}
+	for i, e := range out.Entries {
+		status, ok := e["status"]
+		if !ok {
+			t.Errorf("entry[%d] missing 'status' field", i)
+			continue
+		}
+		statusStr, ok := status.(string)
+		if !ok {
+			t.Errorf("entry[%d] 'status' is not a string: %v", i, status)
+			continue
+		}
+		// Valid statuses: "matched", "not_matched", "no_face"
+		if statusStr != "matched" && statusStr != "not_matched" && statusStr != "no_face" {
+			t.Errorf("entry[%d] invalid status %q", i, statusStr)
+		}
+	}
+	t.Log("=== PASS: audit entries include status field with valid values ===")
+}
+
+// TestStatsEndpoint_E2E verifies the stats endpoint returns total_collected.
+func TestStatsEndpoint_E2E(t *testing.T) {
+	t.Log("=== Verifying /stats includes total_collected ===")
+	statsResp, err := http.Get(baseURL + "/stats")
+	if err != nil {
+		t.Fatalf("stats request failed: %v", err)
+	}
+	defer statsResp.Body.Close()
+	if statsResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(statsResp.Body)
+		t.Fatalf("expected 200 from /stats, got %d: %s", statsResp.StatusCode, string(body))
+	}
+
+	var statsOut map[string]interface{}
+	if err := json.NewDecoder(statsResp.Body).Decode(&statsOut); err != nil {
+		t.Fatalf("decode /stats response: %v", err)
+	}
+	for _, key := range []string{"total_checks", "total_matched", "total_no_face", "total_not_matched", "total_collected"} {
+		if _, ok := statsOut[key]; !ok {
+			t.Errorf("/stats missing field %q", key)
+		}
+	}
+	t.Logf("stats: %+v", statsOut)
+	t.Log("=== PASS: /stats includes all expected fields ===")
+}
+
+// TestAuditUnmatched_E2E verifies GET /api/audit-unmatched returns valid JSON.
+func TestAuditUnmatched_E2E(t *testing.T) {
+	t.Log("=== Verifying /api/audit-unmatched returns valid response ===")
+	auditUnmatchedResp, err := http.Get(baseURL + "/api/audit-unmatched")
+	if err != nil {
+		t.Fatalf("audit-unmatched request failed: %v", err)
+	}
+	defer auditUnmatchedResp.Body.Close()
+	if auditUnmatchedResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(auditUnmatchedResp.Body)
+		t.Fatalf("expected 200 from /api/audit-unmatched, got %d: %s", auditUnmatchedResp.StatusCode, string(body))
+	}
+
+	var unmatchedOut struct {
+		Entries []map[string]interface{} `json:"entries"`
+		Count   int                      `json:"count"`
+	}
+	if err := json.NewDecoder(auditUnmatchedResp.Body).Decode(&unmatchedOut); err != nil {
+		t.Fatalf("decode /api/audit-unmatched response: %v", err)
+	}
+	// All returned entries should have status="not_matched"
+	for _, e := range unmatchedOut.Entries {
+		if status, ok := e["status"].(string); ok && status != "not_matched" {
+			t.Errorf("audit-unmatched entry status = %q, want %q", status, "not_matched")
+		}
+	}
+	t.Logf("audit-unmatched returned %d entries", unmatchedOut.Count)
+	t.Log("=== PASS: /api/audit-unmatched returns valid response ===")
+}
