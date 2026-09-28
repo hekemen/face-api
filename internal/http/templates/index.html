@@ -49,14 +49,14 @@
   </a>
 
   <!-- Collected Faces -->
-  <a href="candidates" class="dash-card">
-    <div class="dash-card-title">Collected Faces</div>
+  <a href="stats" class="dash-card">
+    <div class="dash-card-title">Statistics</div>
     <div class="dash-card-data">
-      {{if gt .DashGroups 0}}
-        <div class="stat-big">{{.DashGroups}}</div>
-        <div class="stat-label">groups ({{.DashCandidates}} faces)</div>
+      {{if .DashStats}}
+        <div class="stat-big">{{.DashStats.TotalChecks}}</div>
+        <div class="stat-label">total checks · {{.DashStats.TotalCollected}} collected</div>
       {{else}}
-        <div class="stat-label">No collected faces</div>
+        <div class="stat-label">No statistics yet</div>
       {{end}}
     </div>
   </a>

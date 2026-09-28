@@ -152,6 +152,9 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 			if opts.MatchedFilter == "no" && e.Matched {
 				continue
 			}
+			if opts.StatusFilter != "" && e.Status != opts.StatusFilter {
+				continue
+			}
 			all = append(all, e)
 		}
 		return nil
