@@ -118,6 +118,7 @@ func main() {
 			DeviceName:      os.Getenv("MQTT_DEVICE_NAME"),
 			QueueDepth:      queueDepth,
 			DiscoveryPrefix: "homeassistant",
+			RTSPURL:         os.Getenv("RTSP_URL"),
 		}
 
 		mqttBridge, err = mqtt.New(mqttCfg, faceAPI.CheckStream)
