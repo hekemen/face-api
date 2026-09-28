@@ -50,6 +50,7 @@ func (h *Handlers) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /users/", h.handleDeleteUser)
 	mux.HandleFunc("GET /audit", h.handleListAudit)
 	mux.HandleFunc("GET /api/audit", h.handleListAuditPaginated)
+	mux.HandleFunc("GET /api/audit-unmatched", h.handleAuditUnmatched)
 	mux.HandleFunc("GET /stats", h.handleListStats)
 	mux.HandleFunc("GET /candidates", h.handleListCandidates)
 	mux.HandleFunc("POST /candidates/promote", h.handlePromoteCandidate)
@@ -399,6 +400,24 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (h *Handlers) handleAuditUnmatched(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	entries, err := h.svc.ListUnmatched(100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"entries": entries,
+		"count":   len(entries),
+	})
+}
+
 func (h *Handlers) handleListStats(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -419,6 +438,7 @@ func (h *Handlers) handleListStats(w http.ResponseWriter, r *http.Request) {
 		"total_matched":     stats.TotalMatched,
 		"total_no_face":     stats.TotalNoFace,
 		"total_not_matched": stats.TotalNotMatched,
+		"total_collected":   h.svc.CandidateCount(),
 		"last_matched":      lastMatched,
 		"duration_ms":       time.Since(start).Milliseconds(),
 	})
