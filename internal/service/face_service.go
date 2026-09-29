@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -11,6 +12,15 @@ import (
 	"github.com/rs/zerolog"
 	"h2hsecure.com/face/internal/domain"
 )
+
+// generateUUIDv4 returns a random UUID v4 string.
+func generateUUIDv4() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
 
 const maxPicturesPerUser = 3
 
@@ -297,20 +307,10 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		}, nil
 	}
 
-	// Audit entry for not-matched face.
-	_ = s.audit.Append([]domain.AuditEntry{{
-		Time:       time.Now(),
-		Endpoint:   "stream-check",
-		Name:       "",
-		Similarity: highestScore,
-		Matched:    false,
-		Status:     domain.AuditStatusNotMatched,
-		DurationMs: dur.DurationMs,
-		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
-	}})
-
-	// Auto-collect unmatched face as candidate
+	// Auto-collect unmatched face as candidate (must happen before audit entry)
+	candidateID := generateUUIDv4()
 	candidate := &domain.Candidate{
+		ID:        candidateID,
 		Embedding: embedding,
 		FaceImage: base64.StdEncoding.EncodeToString(crop.Data),
 		Time:      time.Now(),
@@ -318,6 +318,19 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 	if err := s.CollectStreamCandidate(candidate); err != nil {
 		// Log but don't fail the check
 	}
+
+	// Audit entry for not-matched face (includes candidate ID for promotion).
+	_ = s.audit.Append([]domain.AuditEntry{{
+		Time:        time.Now(),
+		Endpoint:    "stream-check",
+		Name:        "",
+		Similarity:  highestScore,
+		Matched:     false,
+		Status:      domain.AuditStatusNotMatched,
+		DurationMs:  dur.DurationMs,
+		FaceImage:   base64.StdEncoding.EncodeToString(crop.Data),
+		CandidateID: candidateID,
+	}})
 
 	return &domain.StreamCheckResult{
 		OperationDuration: dur,
