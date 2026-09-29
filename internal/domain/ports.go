@@ -18,24 +18,6 @@ type UserRepository interface {
 	ListAll() ([]*User, error)
 }
 
-// CandidateRepository manages collected candidate faces.
-type CandidateRepository interface {
-	// Save stores a candidate face.
-	Save(c *Candidate) error
-	// GetByID returns a candidate by ID, or an error if not found.
-	GetByID(id string) (*Candidate, error)
-	// Delete removes a candidate by ID.
-	Delete(id string) error
-	// ListAll returns all candidates.
-	ListAll() ([]*Candidate, error)
-	// DeleteByID removes candidates by their IDs.
-	DeleteByID(ids []string) error
-	// GroupBySimilarity groups candidates by pairwise cosine similarity >= threshold.
-	GroupBySimilarity(threshold float32) ([]*CandidateGroup, error)
-	// CountAll returns the total number of candidates.
-	CountAll() (int, error)
-}
-
 // AuditRepository manages audit trail entries.
 type AuditRepository interface {
 	// Append writes one or more audit entries.
@@ -109,20 +91,14 @@ type FaceService interface {
 	CheckStream(rtspURL string) (*StreamCheckResult, error)
 	// CheckStreamImage runs face detection and recognition on image data
 	// captured from an RTSP stream. Handles detection, recognition, and
-	// auto-collection of unmatched faces.
+	// writes an audit entry with the face embedding.
 	CheckStreamImage(imageData []byte) (*StreamCheckResult, error)
-	// CollectStreamCandidate stores an unmatched face from a stream as a candidate.
-	CollectStreamCandidate(c *Candidate) error
 	// ListUsers returns all enrolled users.
 	ListUsers() ([]*User, error)
 	// DeleteUser removes a user by name.
 	DeleteUser(name string) error
-	// ListCandidates returns all candidates grouped by similarity.
-	ListCandidates() ([]*CandidateGroup, error)
-	// PromoteCandidate promotes a candidate to an enrolled user.
-	PromoteCandidate(candidateID, name string) error
-	// BulkPromoteCandidates promotes multiple candidates to a single user.
-	BulkPromoteCandidates(name string, candidateIDs []string) error
+	// PromoteFromAudit promotes an audit entry to an enrolled user.
+	PromoteFromAudit(auditTime string, name string) error
 	// RecentAudit returns the newest audit entries.
 	RecentAudit(n int) ([]AuditEntry, error)
 	// ListAuditPaginated returns a page of audit entries with filtering.
@@ -131,8 +107,6 @@ type FaceService interface {
 	ListUnmatched(n int) ([]AuditEntry, error)
 	// ComputeStats returns aggregate statistics from the audit log.
 	ComputeStats() (Stats, error)
-	// CandidateCount returns the total number of collected candidates.
-	CandidateCount() int
 }
 
 // --- Response types ---
@@ -186,12 +160,6 @@ type AuditListResponse struct {
 	OperationDuration
 	Count   int          `json:"count"`
 	Entries []AuditEntry `json:"entries"`
-}
-
-// CandidatesListResponse is returned by GET /candidates.
-type CandidatesListResponse struct {
-	OperationDuration
-	Groups []*CandidateGroup `json:"groups"`
 }
 
 // AuditPaginatedResponse is returned by the GET /api/audit endpoint.

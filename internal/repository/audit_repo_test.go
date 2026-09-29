@@ -24,9 +24,6 @@ func openTestDB(t *testing.T) *bolt.DB {
 		if _, err := tx.CreateBucketIfNotExists([]byte(auditBucket)); err != nil {
 			return err
 		}
-		if _, err := tx.CreateBucketIfNotExists([]byte(candidatesBucket)); err != nil {
-			return err
-		}
 		return nil
 	}); err != nil {
 		t.Fatalf("create buckets: %v", err)
@@ -150,24 +147,5 @@ func TestAuditRepositoryCountAll(t *testing.T) {
 	}
 	if count != 3 {
 		t.Errorf("expected 3, got %d", count)
-	}
-}
-
-func TestCandidateRepositoryCountAll(t *testing.T) {
-	db := openTestDB(t)
-	defer db.Close()
-
-	repo := NewCandidateRepository(db)
-
-	now := time.Now()
-	_ = repo.Save(&domain.Candidate{ID: "c1", FaceImage: "c1.jpg", Time: now})
-	_ = repo.Save(&domain.Candidate{ID: "c2", FaceImage: "c2.jpg", Time: now})
-
-	count, err := repo.CountAll()
-	if err != nil {
-		t.Fatalf("CountAll: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("expected 2, got %d", count)
 	}
 }

@@ -48,15 +48,15 @@ func (r *AuditRepository) Append(entries []domain.AuditEntry) error {
 			key := make([]byte, 8)
 			binary.BigEndian.PutUint64(key, seq)
 			val, err := json.Marshal(auditEntryJSON{
-				Time:        formatTime(e.Time),
-				Endpoint:    e.Endpoint,
-				Name:        e.Name,
-				Similarity:  e.Similarity,
-				Matched:     e.Matched,
-				Status:      e.Status,
-				DurationMs:  e.DurationMs,
-				FaceImage:   e.FaceImage,
-				CandidateID: e.CandidateID,
+				Time:       formatTime(e.Time),
+				Endpoint:   e.Endpoint,
+				Name:       e.Name,
+				Similarity: e.Similarity,
+				Matched:    e.Matched,
+				Status:     e.Status,
+				DurationMs: e.DurationMs,
+				FaceImage:  e.FaceImage,
+				Embedding:  e.Embedding,
 			})
 			if err != nil {
 				return err
@@ -98,7 +98,7 @@ func (r *AuditRepository) Recent(n int) ([]domain.AuditEntry, error) {
 				Status:      j.Status,
 				DurationMs:  j.DurationMs,
 				FaceImage:   j.FaceImage,
-				CandidateID: j.CandidateID,
+				Embedding:   j.Embedding,
 			})
 		}
 		return nil
@@ -143,7 +143,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 				Status:      j.Status,
 				DurationMs:  j.DurationMs,
 				FaceImage:   j.FaceImage,
-				CandidateID: j.CandidateID,
+				Embedding:   j.Embedding,
 			}
 
 			// Apply filters.
@@ -232,7 +232,7 @@ func (r *AuditRepository) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 				Status:      j.Status,
 				DurationMs:  j.DurationMs,
 				FaceImage:   j.FaceImage,
-				CandidateID: j.CandidateID,
+				Embedding:   j.Embedding,
 			})
 		}
 		return nil
@@ -293,15 +293,15 @@ func (r *AuditRepository) ComputeStats() (domain.Stats, error) {
 
 // auditEntryJSON is the JSON representation stored in bbolt.
 type auditEntryJSON struct {
-	Time        string  `json:"time"`
-	Endpoint    string  `json:"endpoint"`
-	Name        string  `json:"name"`
-	Similarity  float32 `json:"similarity"`
-	Matched     bool    `json:"matched"`
-	Status      string  `json:"status"`
-	DurationMs  int64   `json:"duration_ms"`
-	FaceImage   string  `json:"face_image,omitempty"`
-	CandidateID string  `json:"candidate_id,omitempty"`
+	Time       string              `json:"time"`
+	Endpoint   string              `json:"endpoint"`
+	Name       string              `json:"name"`
+	Similarity float32             `json:"similarity"`
+	Matched    bool                `json:"matched"`
+	Status     string              `json:"status"`
+	DurationMs int64               `json:"duration_ms"`
+	FaceImage  string              `json:"face_image,omitempty"`
+	Embedding  domain.FaceEmbedding `json:"embedding,omitempty"`
 }
 
 // Helper functions for time serialization.

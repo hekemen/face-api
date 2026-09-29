@@ -52,9 +52,7 @@ func (h *Handlers) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/audit", h.handleListAuditPaginated)
 	mux.HandleFunc("GET /api/audit-unmatched", h.handleAuditUnmatched)
 	mux.HandleFunc("GET /stats", h.handleListStats)
-	mux.HandleFunc("GET /candidates", h.handleListCandidates)
-	mux.HandleFunc("POST /candidates/promote", h.handlePromoteCandidate)
-	mux.HandleFunc("POST /candidates/bulk-promote", h.handleBulkPromoteCandidates)
+	mux.HandleFunc("POST /audit/promote", h.handlePromoteFromAudit)
 	mux.HandleFunc("GET /healthz", h.handleHealthz)
 	mux.HandleFunc("GET /readyz", h.handleReadyz)
 }
@@ -449,33 +447,13 @@ func (h *Handlers) handleListStats(w http.ResponseWriter, r *http.Request) {
 		"total_matched":     stats.TotalMatched,
 		"total_no_face":     stats.TotalNoFace,
 		"total_not_matched": stats.TotalNotMatched,
-		"total_collected":   h.svc.CandidateCount(),
+		"total_collected":   0,
 		"last_matched":      lastMatched,
 		"duration_ms":       time.Since(start).Milliseconds(),
 	})
 }
 
-func (h *Handlers) handleListCandidates(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	start := time.Now()
-
-	groups, err := h.svc.ListCandidates()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"groups":      groups,
-		"duration_ms": time.Since(start).Milliseconds(),
-	})
-}
-
-func (h *Handlers) handlePromoteCandidate(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) handlePromoteFromAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
@@ -493,15 +471,15 @@ func (h *Handlers) handlePromoteCandidate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	candidateID := r.URL.Query().Get("id")
-	if candidateID == "" {
-		writeError(w, http.StatusBadRequest, "Missing 'id' query parameter")
+	auditTime := r.URL.Query().Get("id")
+	if auditTime == "" {
+		writeError(w, http.StatusBadRequest, "Missing 'id' query parameter (audit entry timestamp)")
 		return
 	}
 
 	start := time.Now()
 
-	if err := h.svc.PromoteCandidate(candidateID, req.Name); err != nil {
+	if err := h.svc.PromoteFromAudit(auditTime, req.Name); err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "already exists") {
 			writeError(w, http.StatusConflict, msg)
@@ -517,43 +495,6 @@ func (h *Handlers) handlePromoteCandidate(w http.ResponseWriter, r *http.Request
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":      "promoted",
-		"name":        req.Name,
-		"duration_ms": time.Since(start).Milliseconds(),
-	})
-}
-
-func (h *Handlers) handleBulkPromoteCandidates(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	var req struct {
-		Name         string   `json:"name"`
-		CandidateIDs []string `json:"candidate_ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "Missing 'name' field")
-		return
-	}
-	if len(req.CandidateIDs) == 0 {
-		writeError(w, http.StatusBadRequest, "Missing 'candidate_ids' field")
-		return
-	}
-
-	start := time.Now()
-
-	if err := h.svc.BulkPromoteCandidates(req.Name, req.CandidateIDs); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"status":      "bulk-promoted",
 		"name":        req.Name,
 		"duration_ms": time.Since(start).Milliseconds(),
 	})

@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -13,38 +12,27 @@ import (
 	"h2hsecure.com/face/internal/domain"
 )
 
-// generateUUIDv4 returns a random UUID v4 string.
-func generateUUIDv4() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
 const maxPicturesPerUser = 3
 
 // FaceServiceImpl implements domain.FaceService using repositories and a face processor.
 type FaceServiceImpl struct {
-	users       domain.UserRepository
-	candidates  domain.CandidateRepository
-	audit       domain.AuditRepository
-	processor   domain.FaceProcessor
-	rtspReader  domain.RTSPReader
-	threshold   float32
-	logger      *zerolog.Logger
-	mu          sync.Mutex
+	users     domain.UserRepository
+	audit     domain.AuditRepository
+	processor domain.FaceProcessor
+	rtspReader domain.RTSPReader
+	threshold float32
+	logger    *zerolog.Logger
+	mu        sync.Mutex
 }
 
 // New creates a new FaceService.
-func New(users domain.UserRepository, candidates domain.CandidateRepository,
-	audit domain.AuditRepository, processor domain.FaceProcessor, threshold float32) *FaceServiceImpl {
+func New(users domain.UserRepository, audit domain.AuditRepository,
+	processor domain.FaceProcessor, threshold float32) *FaceServiceImpl {
 	return &FaceServiceImpl{
-		users:      users,
-		candidates: candidates,
-		audit:      audit,
-		processor:  processor,
-		threshold:  threshold,
+		users:     users,
+		audit:     audit,
+		processor: processor,
+		threshold: threshold,
 	}
 }
 
@@ -212,6 +200,7 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 		Matched:    matched,
 		DurationMs: result.DurationMs,
 		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+		Embedding:  crop.Embedding,
 	}})
 
 	return result, nil
@@ -296,6 +285,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Status:     domain.AuditStatusMatched,
 			DurationMs: dur.DurationMs,
 			FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+			Embedding:  embedding,
 		}})
 		return &domain.StreamCheckResult{
 			OperationDuration: dur,
@@ -307,29 +297,17 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		}, nil
 	}
 
-	// Auto-collect unmatched face as candidate (must happen before audit entry)
-	candidateID := generateUUIDv4()
-	candidate := &domain.Candidate{
-		ID:        candidateID,
-		Embedding: embedding,
-		FaceImage: base64.StdEncoding.EncodeToString(crop.Data),
-		Time:      time.Now(),
-	}
-	if err := s.CollectStreamCandidate(candidate); err != nil {
-		// Log but don't fail the check
-	}
-
-	// Audit entry for not-matched face (includes candidate ID for promotion).
+	// Audit entry for not-matched face (stores embedding for promotion).
 	_ = s.audit.Append([]domain.AuditEntry{{
-		Time:        time.Now(),
-		Endpoint:    "stream-check",
-		Name:        "",
-		Similarity:  highestScore,
-		Matched:     false,
-		Status:      domain.AuditStatusNotMatched,
-		DurationMs:  dur.DurationMs,
-		FaceImage:   base64.StdEncoding.EncodeToString(crop.Data),
-		CandidateID: candidateID,
+		Time:       time.Now(),
+		Endpoint:   "stream-check",
+		Name:       "",
+		Similarity: highestScore,
+		Matched:    false,
+		Status:     domain.AuditStatusNotMatched,
+		DurationMs: dur.DurationMs,
+		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+		Embedding:  embedding,
 	}})
 
 	return &domain.StreamCheckResult{
@@ -342,37 +320,51 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 	}, nil
 }
 
-// CollectStreamCandidate stores an unmatched face from a stream as a candidate.
-func (s *FaceServiceImpl) CollectStreamCandidate(c *domain.Candidate) error {
-	// Check for duplicates against existing candidates
-	allCandidates, err := s.candidates.ListAll()
+// PromoteFromAudit promotes an audit entry to an enrolled user.
+// The auditTime is the RFC3339 timestamp of the audit entry to promote.
+func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error {
+	// Check if user already exists
+	exists, err := s.users.Exists(name)
 	if err != nil {
-		return fmt.Errorf("list candidates: %w", err)
+		return fmt.Errorf("check user existence: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("user %q already exists", name)
 	}
 
-	for _, existing := range allCandidates {
-		if domain.CosineSimilarity(c.Embedding, existing.Embedding) >= s.threshold {
-			return nil // duplicate, skip
+	// Load all audit entries and find the one matching the timestamp
+	allEntries, err := s.audit.Recent(10000)
+	if err != nil {
+		return fmt.Errorf("list audit entries: %w", err)
+	}
+
+	var entry *domain.AuditEntry
+	for i := range allEntries {
+		if allEntries[i].Time.Format(time.RFC3339) == auditTime {
+			entry = &allEntries[i]
+			break
 		}
 	}
-
-	// Check against enrolled users too
-	allUsers, err := s.users.ListAll()
-	if err != nil {
-		return fmt.Errorf("list users: %w", err)
+	if entry == nil {
+		return fmt.Errorf("audit entry %q not found", auditTime)
+	}
+	if len(entry.Embedding) == 0 {
+		return fmt.Errorf("audit entry has no embedding (old entry, cannot promote)")
 	}
 
-	for _, u := range allUsers {
-		if domain.BestEmbeddingScore(c.Embedding, u.Embeddings) >= s.threshold {
-			return nil // matched to enrolled user, skip
-		}
+	// Create the user from the audit entry
+	user := &domain.User{
+		Name:       name,
+		Embeddings: []domain.FaceEmbedding{entry.Embedding},
+		Pictures:   []string{entry.FaceImage},
+		UpdatedAt:  time.Now(),
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.candidates.Save(c); err != nil {
-		return fmt.Errorf("save candidate: %w", err)
+	if err := s.users.Save(user); err != nil {
+		return fmt.Errorf("save user: %w", err)
 	}
 
 	return nil
@@ -402,141 +394,6 @@ func (s *FaceServiceImpl) DeleteUser(name string) error {
 	return nil
 }
 
-// --- Candidates ---
-
-func (s *FaceServiceImpl) ListCandidates() ([]*domain.CandidateGroup, error) {
-	return s.candidates.GroupBySimilarity(s.threshold)
-}
-
-func (s *FaceServiceImpl) PromoteCandidate(candidateID, name string) error {
-	// Check if user already exists
-	exists, err := s.users.Exists(name)
-	if err != nil {
-		return fmt.Errorf("check user existence: %w", err)
-	}
-	if exists {
-		return fmt.Errorf("user %q already exists", name)
-	}
-
-	candidate, err := s.candidates.GetByID(candidateID)
-	if err != nil {
-		return fmt.Errorf("get candidate: %w", err)
-	}
-
-	// Find all candidates in the same group
-	allCandidates, err := s.candidates.ListAll()
-	if err != nil {
-		return fmt.Errorf("list candidates: %w", err)
-	}
-
-	var group []*domain.Candidate
-	for _, c := range allCandidates {
-		if domain.CosineSimilarity(candidate.Embedding, c.Embedding) >= 0.45 {
-			group = append(group, c)
-		}
-	}
-
-	// Find the face most similar to the group centroid
-	var centroid domain.FaceEmbedding
-	for _, c := range group {
-		for i, v := range c.Embedding {
-			if len(centroid) == 0 {
-				centroid = make(domain.FaceEmbedding, len(c.Embedding))
-			}
-			centroid[i] += v
-		}
-	}
-	for i := range centroid {
-		centroid[i] /= float32(len(group))
-	}
-
-	bestIdx := 0
-	bestScore := float32(-1)
-	for i, c := range group {
-		sim := domain.CosineSimilarity(c.Embedding, centroid)
-		if sim > bestScore {
-			bestScore = sim
-			bestIdx = i
-		}
-	}
-
-	best := group[bestIdx]
-
-	// Create the user
-	user := &domain.User{
-		Name:       name,
-		Embeddings: []domain.FaceEmbedding{best.Embedding},
-		Pictures:   []string{best.FaceImage},
-		UpdatedAt:  time.Now(),
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.users.Save(user); err != nil {
-		return fmt.Errorf("save user: %w", err)
-	}
-
-	// Delete all candidates in the group
-	ids := make([]string, 0, len(group))
-	for _, c := range group {
-		ids = append(ids, c.ID)
-	}
-	if err := s.candidates.DeleteByID(ids); err != nil {
-		return fmt.Errorf("delete candidates: %w", err)
-	}
-
-	return nil
-}
-
-func (s *FaceServiceImpl) BulkPromoteCandidates(name string, candidateIDs []string) error {
-	// Check if user already exists
-	exists, err := s.users.Exists(name)
-	if err != nil {
-		return fmt.Errorf("check user existence: %w", err)
-	}
-	if exists {
-		return fmt.Errorf("user %q already exists", name)
-	}
-
-	// Load selected candidates
-	allEmbeddings := make([]domain.FaceEmbedding, 0, len(candidateIDs))
-	deletedIDs := make([]string, 0, len(candidateIDs))
-
-	for _, id := range candidateIDs {
-		c, err := s.candidates.GetByID(id)
-		if err != nil {
-			continue // skip missing
-		}
-		allEmbeddings = append(allEmbeddings, c.Embedding)
-		deletedIDs = append(deletedIDs, id)
-	}
-
-	if len(allEmbeddings) == 0 {
-		return fmt.Errorf("no valid candidates found")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	user := &domain.User{
-		Name:       name,
-		Embeddings: allEmbeddings,
-		Pictures:   []string{},
-		UpdatedAt:  time.Now(),
-	}
-
-	if err := s.users.Save(user); err != nil {
-		return fmt.Errorf("save user: %w", err)
-	}
-
-	if err := s.candidates.DeleteByID(deletedIDs); err != nil {
-		return fmt.Errorf("delete candidates: %w", err)
-	}
-
-	return nil
-}
-
 // --- Audit ---
 
 func (s *FaceServiceImpl) RecentAudit(n int) ([]domain.AuditEntry, error) {
@@ -549,14 +406,6 @@ func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]d
 
 func (s *FaceServiceImpl) ComputeStats() (domain.Stats, error) {
 	return s.audit.ComputeStats()
-}
-
-func (s *FaceServiceImpl) CandidateCount() int {
-	count, err := s.candidates.CountAll()
-	if err != nil {
-		return 0
-	}
-	return count
 }
 
 func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {

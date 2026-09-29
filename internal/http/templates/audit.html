@@ -62,11 +62,11 @@
 
   function renderEntry(entry) {
     var img = entry.face_image
-      ? '<img src="data:image/jpeg;base64,' + entry.face_image + '" class="face-thumb entry-thumb" data-id="' + (entry.candidate_id || entry.time) + '">'
-      : '<div class="face-thumb entry-thumb" data-id="' + (entry.candidate_id || entry.time) + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
+      ? '<img src="data:image/jpeg;base64,' + entry.face_image + '" class="face-thumb entry-thumb" data-id="' + entry.time + '">'
+      : '<div class="face-thumb entry-thumb" data-id="' + entry.time + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
     var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
-    var selectedClass = (selectedEntry && (selectedEntry.candidate_id || selectedEntry.time) === (entry.candidate_id || entry.time)) ? ' selected-entry' : '';
+    var selectedClass = (selectedEntry && selectedEntry.time === entry.time) ? ' selected-entry' : '';
     return '<div class="entry' + selectedClass + '" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
       img +
       '<div style="flex:1;min-width:0;">' +
@@ -106,13 +106,13 @@
       document.getElementById('promoteName').focus();
       return;
     }
-    var candidateId = selectedEntry.candidate_id || selectedEntry.time;
+    var auditTime = selectedEntry.time;
     var btn = document.getElementById('promoteBtn');
     btn.disabled = true;
     btn.textContent = 'Promoting…';
     document.getElementById('promoteStatus').textContent = '';
 
-    fetch('../candidates/promote?id=' + encodeURIComponent(candidateId) + '&name=' + encodeURIComponent(name), {
+    fetch('../audit/promote?id=' + encodeURIComponent(auditTime) + '&name=' + encodeURIComponent(name), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     })
@@ -149,9 +149,9 @@
         content.querySelectorAll('.entry-thumb').forEach(function(img) {
           img.addEventListener('click', function() {
             var id = this.getAttribute('data-id');
-            var entry = data.entries.find(function(e) { return (e.candidate_id || e.time) === id; });
+            var entry = data.entries.find(function(e) { return e.time === id; });
             if (entry) {
-              if (selectedEntry && (selectedEntry.candidate_id || selectedEntry.time) === id) {
+              if (selectedEntry && selectedEntry.time === id) {
                 deselectEntry();
               } else {
                 selectEntry(entry);

@@ -157,8 +157,6 @@ type uiPageData struct {
 	DashUsers          []domain.UserInfo
 	DashStats          *domain.StatsResponse
 	DashAudit          []domain.AuditEntry
-	DashCandidates     int
-	DashGroups         int
 	UnmatchedEntries   []domain.AuditEntry
 	TotalCollected     int
 	GitVersion         string
@@ -206,17 +204,12 @@ func (h *UIHandler) renderIndex(w http.ResponseWriter, r *http.Request) {
 			TotalMatched:    stats.TotalMatched,
 			TotalNoFace:     stats.TotalNoFace,
 			TotalNotMatched: stats.TotalNotMatched,
-			TotalCollected:  h.svc.CandidateCount(),
+			TotalCollected:  0,
 			LastMatched:     lastMatchedStr,
 		}
 		entries, _ := h.svc.RecentAudit(10)
 		page.DashAudit = entries
 	}
-
-	// Fetch candidates count for dashboard.
-	groups, _ := h.svc.ListCandidates()
-	page.DashCandidates = len(groups)
-	page.DashGroups = len(groups)
 
 	h.renderTemplate(w, "index.html", page)
 }
@@ -297,13 +290,12 @@ func (h *UIHandler) handleUIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	unmatched, _ := h.svc.ListUnmatched(100)
-	totalCollected := h.svc.CandidateCount()
 
 	h.renderTemplate(w, "audit.html", uiPageData{
 		Entries:          entries,
 		Count:            len(entries),
 		UnmatchedEntries: unmatched,
-		TotalCollected:   totalCollected,
+		TotalCollected:   0,
 	})
 }
 
@@ -327,7 +319,7 @@ func (h *UIHandler) handleUIStats(w http.ResponseWriter, r *http.Request) {
 		TotalMatched:    stats.TotalMatched,
 		TotalNoFace:     stats.TotalNoFace,
 		TotalNotMatched: stats.TotalNotMatched,
-		TotalCollected:  h.svc.CandidateCount(),
+		TotalCollected:  stats.TotalNotMatched,
 		LastMatched:     lastMatchedStr,
 	}
 	h.renderTemplate(w, "stats.html", uiPageData{Stats: sr})

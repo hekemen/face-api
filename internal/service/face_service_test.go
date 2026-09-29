@@ -75,64 +75,6 @@ func (m *mockUserRepo) ListAll() ([]*domain.User, error) {
 	return m.users, nil
 }
 
-type mockCandidateRepo struct {
-	candidates []*domain.Candidate
-}
-
-func (m *mockCandidateRepo) Save(c *domain.Candidate) error {
-	m.candidates = append(m.candidates, c)
-	return nil
-}
-
-func (m *mockCandidateRepo) GetByID(id string) (*domain.Candidate, error) {
-	for _, c := range m.candidates {
-		if c.ID == id {
-			return c, nil
-		}
-	}
-	return nil, fmt.Errorf("candidate %q not found", id)
-}
-
-func (m *mockCandidateRepo) Delete(id string) error {
-	for i, c := range m.candidates {
-		if c.ID == id {
-			m.candidates = append(m.candidates[:i], m.candidates[i+1:]...)
-			return nil
-		}
-	}
-	return nil
-}
-
-func (m *mockCandidateRepo) ListAll() ([]*domain.Candidate, error) {
-	return m.candidates, nil
-}
-
-func (m *mockCandidateRepo) DeleteByID(ids []string) error {
-	filtered := make([]*domain.Candidate, 0, len(m.candidates))
-	for _, c := range m.candidates {
-		keep := true
-		for _, id := range ids {
-			if c.ID == id {
-				keep = false
-				break
-			}
-		}
-		if keep {
-			filtered = append(filtered, c)
-		}
-	}
-	m.candidates = filtered
-	return nil
-}
-
-func (m *mockCandidateRepo) GroupBySimilarity(threshold float32) ([]*domain.CandidateGroup, error) {
-	return nil, nil
-}
-
-func (m *mockCandidateRepo) CountAll() (int, error) {
-	return len(m.candidates), nil
-}
-
 type mockAuditRepo struct {
 	entries []domain.AuditEntry
 }
@@ -167,14 +109,13 @@ func (m *mockAuditRepo) ComputeStats() (domain.Stats, error) {
 func TestCheckStreamImageNoFaceWritesAuditEntry(t *testing.T) {
 	audit := &mockAuditRepo{}
 	users := &mockUserRepo{}
-	candidates := &mockCandidateRepo{}
 
 	// Processor returns no-face error.
 	proc := &mockProcessor{
 		err: fmt.Errorf("no face detected within 3 seconds"),
 	}
 
-	svc := New(users, candidates, audit, proc, 0.45)
+	svc := New(users, audit, proc, 0.45)
 	svc.mu.Lock() // Lock to prevent concurrent issues in test
 	svc.mu.Unlock()
 
@@ -216,7 +157,6 @@ func TestCheckStreamImageMatchedWritesAudit(t *testing.T) {
 			{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 2, 3}}},
 		},
 	}
-	candidates := &mockCandidateRepo{}
 
 	// Processor returns a crop with a matching embedding.
 	proc := &mockProcessor{
@@ -226,7 +166,7 @@ func TestCheckStreamImageMatchedWritesAudit(t *testing.T) {
 		},
 	}
 
-	svc := New(users, candidates, audit, proc, 0.45)
+	svc := New(users, audit, proc, 0.45)
 
 	result, err := svc.CheckStreamImage([]byte("fake"))
 	if err != nil {
@@ -264,7 +204,6 @@ func TestCheckStreamImageNotMatchedWritesAuditAndCandidate(t *testing.T) {
 			{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 2, 3}}},
 		},
 	}
-	candidates := &mockCandidateRepo{}
 
 	// Processor returns a crop with a non-matching embedding.
 	// {-0.5, 0.9, 0.1} has ~0.41 cosine similarity to {1, 2, 3} — below 0.45 threshold.
@@ -276,7 +215,7 @@ func TestCheckStreamImageNotMatchedWritesAuditAndCandidate(t *testing.T) {
 		},
 	}
 
-	svc := New(users, candidates, audit, proc, 0.45)
+	svc := New(users, audit, proc, 0.45)
 
 	result, err := svc.CheckStreamImage([]byte("fake"))
 	if err != nil {
@@ -305,28 +244,18 @@ func TestCheckStreamImageNotMatchedWritesAuditAndCandidate(t *testing.T) {
 	if e.Matched != false {
 		t.Errorf("Matched = %v, want false", e.Matched)
 	}
-
-	// Verify candidate was auto-collected.
-	if len(candidates.candidates) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(candidates.candidates))
-	}
-	if len(candidates.candidates[0].Embedding) != len(nonMatch) {
-		t.Errorf("candidate embedding length = %d, want %d",
-			len(candidates.candidates[0].Embedding), len(nonMatch))
-	}
 }
 
 func TestCheckStreamImageConnectionErrorNoAudit(t *testing.T) {
 	audit := &mockAuditRepo{}
 	users := &mockUserRepo{}
-	candidates := &mockCandidateRepo{}
 
 	// Processor returns a connection error (not a no-face error).
 	proc := &mockProcessor{
 		err: fmt.Errorf("connection refused"),
 	}
 
-	svc := New(users, candidates, audit, proc, 0.45)
+	svc := New(users, audit, proc, 0.45)
 
 	result, err := svc.CheckStreamImage([]byte("fake"))
 	if err != nil {
@@ -349,14 +278,13 @@ func TestCheckStreamImageConnectionErrorNoAudit(t *testing.T) {
 func TestCheckStreamImageNoFaceNotConnectionError(t *testing.T) {
 	audit := &mockAuditRepo{}
 	users := &mockUserRepo{}
-	candidates := &mockCandidateRepo{}
 
 	// Processor returns a generic "no face" error (not connection-related).
 	proc := &mockProcessor{
 		err: fmt.Errorf("no face detected within 3 seconds"),
 	}
 
-	svc := New(users, candidates, audit, proc, 0.45)
+	svc := New(users, audit, proc, 0.45)
 
 	result, err := svc.CheckStreamImage([]byte("fake-frame"))
 	if err != nil {
