@@ -18,15 +18,6 @@
     <option value="not_matched">Not matched</option>
     <option value="no_face">No face</option>
   </select>
-  <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
-    <input type="radio" name="matched" value="" checked /> All
-  </label>
-  <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
-    <input type="radio" name="matched" value="yes" /> Matched
-  </label>
-  <label style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.4rem 0.6rem;">
-    <input type="radio" name="matched" value="no" /> Not matched
-  </label>
   <button id="clearFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Clear</button>
 </div>
 
@@ -48,7 +39,7 @@
 <script>
 (function() {
   'use strict';
-  var state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '', status: '' };
+  var state = { page: 1, perPage: 20, user: '', endpoint: '', status: '' };
   var selectedEntry = null;
   var usersLoaded = false;
 
@@ -56,7 +47,6 @@
     var u = '../api/audit?page=' + state.page + '&per_page=' + state.perPage;
     if (state.user) u += '&name=' + encodeURIComponent(state.user);
     if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
-    if (state.matched) u += '&matched=' + encodeURIComponent(state.matched);
     if (state.status) u += '&status=' + encodeURIComponent(state.status);
     return u;
   }
@@ -76,7 +66,7 @@
       : '<div class="face-thumb entry-thumb" data-id="' + (entry.candidate_id || entry.time) + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
     var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
-    var selectedClass = (selectedEntry && selectedEntry.time === entry.time) ? ' selected-entry' : '';
+    var selectedClass = (selectedEntry && (selectedEntry.candidate_id || selectedEntry.time) === (entry.candidate_id || entry.time)) ? ' selected-entry' : '';
     return '<div class="entry' + selectedClass + '" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
       img +
       '<div style="flex:1;min-width:0;">' +
@@ -159,9 +149,9 @@
         content.querySelectorAll('.entry-thumb').forEach(function(img) {
           img.addEventListener('click', function() {
             var id = this.getAttribute('data-id');
-            var entry = data.entries.find(function(e) { return e.time === id; });
+            var entry = data.entries.find(function(e) { return (e.candidate_id || e.time) === id; });
             if (entry) {
-              if (selectedEntry && selectedEntry.time === id) {
+              if (selectedEntry && (selectedEntry.candidate_id || selectedEntry.time) === id) {
                 deselectEntry();
               } else {
                 selectEntry(entry);
@@ -227,17 +217,11 @@
   document.getElementById('filterStatus').addEventListener('change', function() {
     state.status = this.value; state.page = 1; render();
   });
-  document.querySelectorAll('input[name="matched"]').forEach(function(radio) {
-    radio.addEventListener('change', function() {
-      state.matched = this.value; state.page = 1; render();
-    });
-  });
   document.getElementById('clearFilters').addEventListener('click', function() {
-    state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '', status: '' };
+    state = { page: 1, perPage: 20, user: '', endpoint: '', status: '' };
     document.getElementById('filterUser').value = '';
     document.getElementById('filterEndpoint').value = '';
     document.getElementById('filterStatus').value = '';
-    document.querySelector('input[name="matched"][value=""]').checked = true;
     render();
   });
 
