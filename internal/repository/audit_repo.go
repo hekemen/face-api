@@ -114,12 +114,16 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 	}
 
 	var all []domain.AuditEntry
+	totalCount := 0
+
 	err := r.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(auditBucket))
 		if b == nil {
 			return nil
 		}
 		c := b.Cursor()
+
+		// Iterate newest-first, count total matches and collect the requested page.
 		for k, v := c.Last(); k != nil; k, v = c.Prev() {
 			var j auditEntryJSON
 			if err := json.Unmarshal(v, &j); err != nil {
@@ -155,7 +159,15 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 			if opts.StatusFilter != "" && e.Status != opts.StatusFilter {
 				continue
 			}
-			all = append(all, e)
+
+			totalCount++
+			// Collect entries for the requested page only.
+			// Entries are newest-first; page 1 = entries 1..perPage, page 2 = entries (perPage+1)..2*perPage, etc.
+			lower := (opts.Page-1)*opts.PerPage + 1
+			upper := opts.Page * opts.PerPage
+			if totalCount >= lower && totalCount <= upper {
+				all = append(all, e)
+			}
 		}
 		return nil
 	})
@@ -163,18 +175,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 		return nil, 0, err
 	}
 
-	totalCount := len(all)
-
-	// Paginate (entries are already newest-first).
-	start := (opts.Page - 1) * opts.PerPage
-	if start >= totalCount {
-		return nil, totalCount, nil
-	}
-	end := start + opts.PerPage
-	if end > totalCount {
-		end = totalCount
-	}
-	return all[start:end], totalCount, nil
+	return all, totalCount, nil
 }
 
 // CountAll returns the total number of audit entries.
@@ -236,8 +237,11 @@ func (r *AuditRepository) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 }
 
 // ComputeStats returns aggregate statistics from all audit entries.
+// It iterates over entries without storing them all in memory to avoid OOM.
 func (r *AuditRepository) ComputeStats() (domain.Stats, error) {
-	var entries []domain.AuditEntry
+	var stats domain.Stats
+	var lastMatched time.Time
+
 	err := r.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(auditBucket))
 		if b == nil {
@@ -252,40 +256,26 @@ func (r *AuditRepository) ComputeStats() (domain.Stats, error) {
 			if j.Status == "" {
 				j.Status = "matched"
 			}
-			entries = append(entries, domain.AuditEntry{
-				Time:       parseTime(j.Time),
-				Endpoint:   j.Endpoint,
-				Name:       j.Name,
-				Similarity: j.Similarity,
-				Matched:    j.Matched,
-				Status:     j.Status,
-				DurationMs: j.DurationMs,
-				FaceImage:  j.FaceImage,
-			})
+			stats.TotalChecks++
+			switch j.Status {
+			case domain.AuditStatusMatched:
+				stats.TotalMatched++
+				if j.Time != "" {
+					t, err := time.Parse(time.RFC3339, j.Time)
+					if err == nil && t.After(lastMatched) {
+						lastMatched = t
+					}
+				}
+			case domain.AuditStatusNoFace:
+				stats.TotalNoFace++
+			case domain.AuditStatusNotMatched:
+				stats.TotalNotMatched++
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return domain.Stats{}, err
-	}
-
-	stats := domain.Stats{
-		TotalChecks: len(entries),
-	}
-
-	var lastMatched time.Time
-	for _, e := range entries {
-		switch e.Status {
-		case domain.AuditStatusMatched:
-			stats.TotalMatched++
-			if e.Time.After(lastMatched) {
-				lastMatched = e.Time
-			}
-		case domain.AuditStatusNoFace:
-			stats.TotalNoFace++
-		case domain.AuditStatusNotMatched:
-			stats.TotalNotMatched++
-		}
 	}
 
 	if !lastMatched.IsZero() {
