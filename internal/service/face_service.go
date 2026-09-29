@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
@@ -123,7 +124,7 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 	updated := &domain.User{
 		Name:       name,
 		Embeddings: append(embeddings, embedding),
-		Pictures:   append(pictures, string(crop.Data)),
+		Pictures:   append(pictures, base64.StdEncoding.EncodeToString(crop.Data)),
 		UpdatedAt:  time.Now(),
 	}
 
@@ -139,7 +140,7 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 		Similarity: 1.0,
 		Matched:    true,
 		DurationMs: 0,
-		FaceImage:  string(crop.Data),
+		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
 	}})
 	if err != nil {
 		return fmt.Errorf("write audit entry: %w", err)
@@ -200,7 +201,7 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 		Similarity: bestScore,
 		Matched:    matched,
 		DurationMs: result.DurationMs,
-		FaceImage:  string(crop.Data),
+		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
 	}})
 
 	return result, nil
@@ -238,7 +239,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Matched:    false,
 			Status:     domain.AuditStatusNoFace,
 			DurationMs: time.Since(start).Milliseconds(),
-			FaceImage:  string(imageData),
+			FaceImage:  base64.StdEncoding.EncodeToString(imageData),
 		}})
 		s.logf("no face detected", "timestamp", time.Now().Format(time.RFC3339))
 		return &domain.StreamCheckResult{
@@ -284,7 +285,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Matched:    true,
 			Status:     domain.AuditStatusMatched,
 			DurationMs: dur.DurationMs,
-			FaceImage:  string(crop.Data),
+			FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
 		}})
 		return &domain.StreamCheckResult{
 			OperationDuration: dur,
@@ -292,7 +293,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Name:              bestName,
 			Similarity:        highestScore,
 			Matched:           true,
-			FaceImage:         string(crop.Data),
+			FaceImage:         base64.StdEncoding.EncodeToString(crop.Data),
 		}, nil
 	}
 
@@ -305,13 +306,13 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		Matched:    false,
 		Status:     domain.AuditStatusNotMatched,
 		DurationMs: dur.DurationMs,
-		FaceImage:  string(crop.Data),
+		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
 	}})
 
 	// Auto-collect unmatched face as candidate
 	candidate := &domain.Candidate{
 		Embedding: embedding,
-		FaceImage: string(crop.Data),
+		FaceImage: base64.StdEncoding.EncodeToString(crop.Data),
 		Time:      time.Now(),
 	}
 	if err := s.CollectStreamCandidate(candidate); err != nil {
@@ -324,7 +325,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		Reason:            "Face detected but similarity below threshold",
 		Similarity:        highestScore,
 		Matched:           false,
-		FaceImage:         string(crop.Data),
+		FaceImage:         base64.StdEncoding.EncodeToString(crop.Data),
 	}, nil
 }
 
