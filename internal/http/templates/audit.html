@@ -30,6 +30,15 @@
   <button id="clearFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Clear</button>
 </div>
 
+<!-- Promote bar: shown when an entry is selected -->
+<div id="promoteBar" style="display:none;align-items:center;gap:0.5rem;padding:0.6rem 0.8rem;margin-bottom:0.75rem;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:4px;">
+  <img id="promoteThumb" src="" class="face-thumb" style="width:48px;height:48px;flex-shrink:0;" />
+  <input type="text" id="promoteName" placeholder="Enter name…" style="flex:1;padding:0.4rem;font-size:0.9rem;" />
+  <button id="promoteBtn" style="padding:0.4rem 0.8rem;cursor:pointer;">Promote</button>
+  <button id="deselectBtn" style="padding:0.4rem 0.6rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);">✕</button>
+  <span id="promoteStatus" style="font-size:0.85rem;"></span>
+</div>
+
 <p id="auditInfo">Loading...</p>
 
 <div id="auditContent"></div>
@@ -40,6 +49,7 @@
 (function() {
   'use strict';
   var state = { page: 1, perPage: 20, user: '', endpoint: '', matched: '', status: '' };
+  var selectedEntry = null;
   var usersLoaded = false;
 
   function buildURL() {
@@ -60,33 +70,75 @@
     }
   }
 
-  function promoteForm(entry) {
-    if (entry.status !== 'not_matched' && entry.status !== 'no_face') return '';
-    return '<form action="../candidates/promote" method="post" style="margin:0.25rem 0;display:inline-flex;gap:0.3rem;align-items:center;">' +
-      '<input type="hidden" name="id" value="' + entry.time + '">' +
-      '<input type="text" name="name" placeholder="Name" style="padding:0.25rem;font-size:0.8rem;width:100px;">' +
-      '<button type="submit" style="padding:0.25rem 0.5rem;font-size:0.8rem;">Promote</button>' +
-      '</form>';
-  }
-
   function renderEntry(entry) {
     var img = entry.face_image
-      ? '<img src="data:image/jpeg;base64,' + entry.face_image + '" class="face-thumb">'
-      : '<div class="face-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
+      ? '<img src="data:image/jpeg;base64,' + entry.face_image + '" class="face-thumb entry-thumb" data-id="' + (entry.candidate_id || entry.time) + '">'
+      : '<div class="face-thumb entry-thumb" data-id="' + (entry.candidate_id || entry.time) + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
     var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
-    return '<div class="entry" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
+    var selectedClass = (selectedEntry && selectedEntry.time === entry.time) ? ' selected-entry' : '';
+    return '<div class="entry' + selectedClass + '" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
       img +
       '<div style="flex:1;min-width:0;">' +
         '<div style="font-weight:600;">' + name + '</div>' +
         '<div class="entry-time">' + entry.time + '</div>' +
-        promoteForm(entry) +
       '</div>' +
       '<div style="text-align:right;min-width:100px;">' +
         statusBadge(entry.status) +
         '<div style="font-size:0.8rem;color:var(--pico-muted-color);">similarity: ' + similarity + '</div>' +
       '</div>' +
     '</div>';
+  }
+
+  function selectEntry(entry) {
+    selectedEntry = entry;
+    var bar = document.getElementById('promoteBar');
+    bar.style.display = 'flex';
+    document.getElementById('promoteThumb').src = 'data:image/jpeg;base64,' + (entry.face_image || '');
+    document.getElementById('promoteName').value = '';
+    document.getElementById('promoteStatus').textContent = '';
+    document.getElementById('promoteBtn').textContent = 'Promote';
+    document.getElementById('promoteBtn').disabled = false;
+    document.getElementById('promoteName').focus();
+    render();
+  }
+
+  function deselectEntry() {
+    selectedEntry = null;
+    document.getElementById('promoteBar').style.display = 'none';
+    render();
+  }
+
+  function doPromote() {
+    if (!selectedEntry) return;
+    var name = document.getElementById('promoteName').value.trim();
+    if (!name) {
+      document.getElementById('promoteName').focus();
+      return;
+    }
+    var candidateId = selectedEntry.candidate_id || selectedEntry.time;
+    var btn = document.getElementById('promoteBtn');
+    btn.disabled = true;
+    btn.textContent = 'Promoting…';
+    document.getElementById('promoteStatus').textContent = '';
+
+    fetch('../candidates/promote?id=' + encodeURIComponent(candidateId) + '&name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      document.getElementById('promoteStatus').innerHTML = '<span style="color:green;">✓ Promoted!</span>';
+      setTimeout(function() {
+        deselectEntry();
+        render();
+      }, 800);
+    })
+    .catch(function(err) {
+      document.getElementById('promoteStatus').innerHTML = '<span style="color:red;">Error: ' + err + '</span>';
+      btn.disabled = false;
+      btn.textContent = 'Promote';
+    });
   }
 
   function render() {
@@ -102,6 +154,21 @@
         } else {
           content.innerHTML = data.entries.map(renderEntry).join('');
         }
+
+        // Bind click handlers for entry thumbnails
+        content.querySelectorAll('.entry-thumb').forEach(function(img) {
+          img.addEventListener('click', function() {
+            var id = this.getAttribute('data-id');
+            var entry = data.entries.find(function(e) { return e.time === id; });
+            if (entry) {
+              if (selectedEntry && selectedEntry.time === id) {
+                deselectEntry();
+              } else {
+                selectEntry(entry);
+              }
+            }
+          });
+        });
 
         // Render pagination
         var pag = document.getElementById('pagination');
@@ -174,6 +241,18 @@
     render();
   });
 
+  // Promote bar events
+  document.getElementById('promoteBtn').addEventListener('click', doPromote);
+  document.getElementById('deselectBtn').addEventListener('click', deselectEntry);
+  document.getElementById('promoteName').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') doPromote();
+  });
+
+  // Escape key deselects
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && selectedEntry) deselectEntry();
+  });
+
   render();
   loadUsers();
 })();
@@ -184,6 +263,9 @@
 .badge-warning { background: #fff3cd; color: #856404; }
 .badge-danger { background: #f8d7da; color: #721c24; }
 .entry { display: flex; gap: 0.75rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+.entry.selected-entry { background: rgba(0,0,0,0.03); border-radius: 4px; padding: 0.5rem; margin: 0 -0.5rem; }
+.entry-thumb { cursor: pointer; transition: opacity 0.15s; }
+.entry-thumb:hover { opacity: 0.75; }
 </style>
 {{template "foot" .}}
 {{template "clockScript" .}}

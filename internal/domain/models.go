@@ -35,14 +35,15 @@ type CandidateGroup struct {
 
 // AuditEntry records a single face scan attempt for the audit log.
 type AuditEntry struct {
-	Time       time.Time `json:"time"`
-	Endpoint   string    `json:"endpoint"`
-	Name       string    `json:"name"`
-	Similarity float32   `json:"similarity"`
-	Matched    bool      `json:"matched"`
-	Status     string    `json:"status"`
-	DurationMs int64     `json:"duration_ms"`
-	FaceImage  string    `json:"face_image"` // base64-encoded cropped face JPEG
+	Time        time.Time `json:"time"`
+	Endpoint    string    `json:"endpoint"`
+	Name        string    `json:"name"`
+	Similarity  float32   `json:"similarity"`
+	Matched     bool      `json:"matched"`
+	Status      string    `json:"status"`
+	DurationMs  int64     `json:"duration_ms"`
+	FaceImage   string    `json:"face_image"`   // base64-encoded cropped face JPEG
+	CandidateID string    `json:"candidate_id"` // ID of the associated candidate (for promotion)
 }
 
 // Audit entry status constants.
