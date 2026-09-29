@@ -591,7 +591,7 @@ func TestRecognizeNoFace_E2E(t *testing.T) {
 }
 
 // TestAuditStatusField_E2E verifies that audit entries returned by the API
-// include the new `status` field introduced by the audit-candidate unification.
+// include the `status` and `embedding` fields for promotion support.
 func TestAuditStatusField_E2E(t *testing.T) {
 	t.Log("=== Verifying /api/audit entries include status field ===")
 	auditResp, err := http.Get(baseURL + "/api/audit?per_page=50")

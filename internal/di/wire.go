@@ -42,7 +42,6 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	}
 
 	userRepo := repository.NewUserRepository(cfg.DB)
-	candidateRepo := repository.NewCandidateRepository(cfg.DB)
 	auditRepo := repository.NewAuditRepository(cfg.DB)
 
 	// Backfill picture data from audit log for legacy users.
@@ -51,7 +50,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	}
 
 	processor := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession)
-	faceService := service.New(userRepo, candidateRepo, auditRepo, processor, cfg.Threshold)
+	faceService := service.New(userRepo, auditRepo, processor, cfg.Threshold)
 	rtspReader := rtsp.New()
 
 	handlers := fhttp.NewHandlers(
@@ -89,7 +88,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 // EnsureBuckets creates the required bbolt buckets in the given database.
 func EnsureBuckets(db *bolt.DB) error {
 	return db.Update(func(tx *bolt.Tx) error {
-		for _, name := range []string{"Faces", "Audit", "Candidates"} {
+		for _, name := range []string{"Faces", "Audit"} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return err
 			}

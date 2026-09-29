@@ -16,34 +16,17 @@ type User struct {
 	UpdatedAt  time.Time
 }
 
-// Candidate represents an unknown face collected from a stream.
-type Candidate struct {
-	ID        string
-	Embedding FaceEmbedding
-	FaceImage string // base64-encoded cropped face JPEG
-	Time      time.Time
-	StreamURL string
-}
-
-// CandidateGroup is a computed grouping of similar candidates.
-type CandidateGroup struct {
-	ID             string
-	FaceCount      int
-	BestSimilarity float32
-	Faces          []Candidate
-}
-
 // AuditEntry records a single face scan attempt for the audit log.
 type AuditEntry struct {
-	Time        time.Time `json:"time"`
-	Endpoint    string    `json:"endpoint"`
-	Name        string    `json:"name"`
-	Similarity  float32   `json:"similarity"`
-	Matched     bool      `json:"matched"`
-	Status      string    `json:"status"`
-	DurationMs  int64     `json:"duration_ms"`
-	FaceImage   string    `json:"face_image"`   // base64-encoded cropped face JPEG
-	CandidateID string    `json:"candidate_id"` // ID of the associated candidate (for promotion)
+	Time       time.Time `json:"time"`
+	Endpoint   string    `json:"endpoint"`
+	Name       string    `json:"name"`
+	Similarity float32   `json:"similarity"`
+	Matched    bool      `json:"matched"`
+	Status     string    `json:"status"`
+	DurationMs int64     `json:"duration_ms"`
+	FaceImage  string    `json:"face_image"`  // base64-encoded cropped face JPEG
+	Embedding  FaceEmbedding `json:"embedding"` // 512-dim embedding (for promotion)
 }
 
 // Audit entry status constants.
