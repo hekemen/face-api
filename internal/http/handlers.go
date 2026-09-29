@@ -346,6 +346,9 @@ func (h *Handlers) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if entries == nil {
+		entries = []domain.AuditEntry{}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"count":       len(entries),
@@ -386,6 +389,9 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if entries == nil {
+		entries = []domain.AuditEntry{}
+	}
 
 	totalPages := (totalCount + perPage - 1) / perPage
 	if totalPages == 0 {
@@ -412,6 +418,9 @@ func (h *Handlers) handleAuditUnmatched(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if entries == nil {
+		entries = []domain.AuditEntry{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
