@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/bluenviron/gortsplib/v5 v5.6.5
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/liqmix/govid v0.0.0-20260726214734-844820719b99
 	github.com/pion/rtp v1.10.5
 	github.com/rs/zerolog v1.35.1
@@ -29,7 +30,6 @@ require (
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
-	github.com/eclipse/paho.mqtt.golang v1.5.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

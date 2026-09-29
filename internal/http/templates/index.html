@@ -24,11 +24,14 @@
     <div class="dash-card-desc">Identify a face from an image</div>
   </a>
 
-  <!-- Audit Log -->
+  <!-- Activity (unified audit + collected faces) -->
   <a href="audit" class="dash-card">
-    <div class="dash-card-title">Audit Log</div>
+    <div class="dash-card-title">Activity</div>
     <div class="dash-card-data">
       {{if .DashAudit}}
+        <div style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--pico-muted-color);">
+          {{len .DashAudit}} recent entries · {{.DashCandidates}} collected faces
+        </div>
         {{range .DashAudit}}
         <div class="entry">
           <span class="tag tag-{{.Endpoint}}">{{.Endpoint}}</span>
@@ -44,19 +47,6 @@
         {{end}}
       {{else}}
         <div class="stat-label">No entries yet</div>
-      {{end}}
-    </div>
-  </a>
-
-  <!-- Collected Faces -->
-  <a href="stats" class="dash-card">
-    <div class="dash-card-title">Statistics</div>
-    <div class="dash-card-data">
-      {{if .DashStats}}
-        <div class="stat-big">{{.DashStats.TotalChecks}}</div>
-        <div class="stat-label">total checks · {{.DashStats.TotalCollected}} collected</div>
-      {{else}}
-        <div class="stat-label">No statistics yet</div>
       {{end}}
     </div>
   </a>

@@ -140,11 +140,16 @@ func (r *Reader) readMJPEG(c *gortsplib.Client, u *base.URL, desc *description.S
 	frameCh := make(chan frameResult, 1)
 	received := make(chan struct{})
 
+	frameCount := 0
 	c.OnPacketRTP(media, f, func(pkt *rtp.Packet) {
 		select {
 		case <-received:
 			return
 		default:
+		}
+		frameCount++
+		if frameCount < 5 {
+			return
 		}
 		jpegData, err := decoder.Decode(pkt)
 		if err != nil {
@@ -197,11 +202,16 @@ func (r *Reader) readH264(c *gortsplib.Client, u *base.URL, desc *description.Se
 	frameCh := make(chan frameResult, 1)
 	received := make(chan struct{})
 
+	frameCount := 0
 	c.OnPacketRTP(media, f, func(pkt *rtp.Packet) {
 		select {
 		case <-received:
 			return
 		default:
+		}
+		frameCount++
+		if frameCount < 5 {
+			return
 		}
 		nalus, err := depacketizer.Decode(pkt)
 		if err != nil {

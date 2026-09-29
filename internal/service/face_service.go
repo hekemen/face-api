@@ -75,7 +75,7 @@ func (s *FaceServiceImpl) CheckStream(rtspURL string) (*domain.StreamCheckResult
 	if s.rtspReader == nil {
 		return nil, fmt.Errorf("RTSP reader not configured")
 	}
-	imageData, err := s.rtspReader.ReadFrame(rtspURL, 3*time.Second)
+	imageData, err := s.rtspReader.ReadFrame(rtspURL, 10*time.Second)
 	if err != nil {
 		reason := "Failed to connect to RTSP stream"
 		if isNoFaceError(err) {

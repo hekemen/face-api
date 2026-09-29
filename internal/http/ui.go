@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"embed"
+	"fmt"
 	"html/template"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -79,23 +81,38 @@ var templateCache = make(map[string]*template.Template)
 
 func (h *UIHandler) renderTemplate(w http.ResponseWriter, name string, data any) {
 	key := name
+	var tmpl *template.Template
+	var err error
+
 	if t, ok := templateCache[key]; ok {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := t.Execute(w, data); err != nil {
-			http.Error(w, "Render error", http.StatusInternalServerError)
+		tmpl = t
+	} else {
+		tmpl, err = template.ParseFS(embeddedTemplates, "templates/"+name, "templates/shared.html")
+		if err != nil {
+			http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
+		templateCache[key] = tmpl
+	}
+
+	var buf bytes.Buffer
+	var execErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				execErr = fmt.Errorf("template execution panic: %v", r)
+			}
+		}()
+		execErr = tmpl.Execute(&buf, data)
+	}()
+	if execErr != nil {
+		log.Printf("ui: template %s error: %v", name, execErr)
+		http.Error(w, "Template execution error", http.StatusInternalServerError)
 		return
 	}
-	tmpl, err := template.ParseFS(embeddedTemplates, "templates/"+name, "templates/shared.html")
-	if err != nil {
-		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	templateCache[key] = tmpl
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, data); err != nil {
-		http.Error(w, "Render error", http.StatusInternalServerError)
-	}
+	w.Write(buf.Bytes())
 }
 
 // serveStatic serves an embedded file.

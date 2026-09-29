@@ -153,7 +153,7 @@ func (h *Handlers) handleEnrollFromStream(w http.ResponseWriter, r *http.Request
 	}
 
 	// Read RTSP frame
-	imageData, err := h.rtspReader.ReadFrame(rtspURL, 3*time.Second)
+	imageData, err := h.rtspReader.ReadFrame(rtspURL, 10*time.Second)
 	if err != nil {
 		reason := "Failed to connect to RTSP stream"
 		if strings.Contains(err.Error(), "No face detected") {
@@ -195,7 +195,7 @@ func (h *Handlers) handleRecognize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var err error
-		imageData, err = h.rtspReader.ReadFrame(rtspURL, 3*time.Second)
+		imageData, err = h.rtspReader.ReadFrame(rtspURL, 10*time.Second)
 		if err != nil {
 			msg := err.Error()
 			if strings.Contains(strings.ToLower(msg), "no face detected") {
@@ -249,7 +249,7 @@ func (h *Handlers) handleStreamCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imageData, err := h.rtspReader.ReadFrame(rtspURL, 3*time.Second)
+	imageData, err := h.rtspReader.ReadFrame(rtspURL, 10*time.Second)
 	if err != nil {
 		reason := "Failed to connect to RTSP stream"
 		writeJSON(w, http.StatusOK, map[string]interface{}{

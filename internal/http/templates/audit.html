@@ -61,7 +61,7 @@
   }
 
   function promoteForm(entry) {
-    if (entry.status !== 'not_matched') return '';
+    if (entry.status !== 'not_matched' && entry.status !== 'no_face') return '';
     return '<form action="../candidates/promote" method="post" style="margin:0.25rem 0;display:inline-flex;gap:0.3rem;align-items:center;">' +
       '<input type="hidden" name="id" value="' + entry.time + '">' +
       '<input type="text" name="name" placeholder="Name" style="padding:0.25rem;font-size:0.8rem;width:100px;">' +
@@ -71,7 +71,7 @@
 
   function renderEntry(entry) {
     var img = entry.face_image
-      ? '<img src="' + entry.face_image + '" class="face-thumb">'
+      ? '<img src="data:image/jpeg;base64,' + entry.face_image + '" class="face-thumb">'
       : '<div class="face-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
     var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
