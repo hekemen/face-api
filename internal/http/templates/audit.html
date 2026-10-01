@@ -112,7 +112,8 @@
     var img;
     if (entry.has_face) {
       // Has a face image — use actual <img> element for display + clickable
-      img = '<img class="face-thumb entry-thumb" id="' + thumbId + '" data-id="' + entry.time + '" src="" alt="face" style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;flex-shrink:0;background:var(--pico-card-background-color);" title="Click to view face image" />';
+      var src = entry.face_image ? 'data:image/jpeg;base64,' + entry.face_image : '';
+      img = '<img class="face-thumb entry-thumb" id="' + thumbId + '" data-id="' + entry.time + '" src="' + src + '" alt="face" style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;flex-shrink:0;background:var(--pico-card-background-color);" title="Click to view face image" />';
     } else {
       // No face detected — clickable link to reveal original frame in popup
       img = '<button class="face-thumb no-face-link" id="' + thumbId + '" data-id="' + entry.time + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.65rem;width:48px;height:48px;border-radius:6px;flex-shrink:0;cursor:pointer;border:1px dashed var(--pico-muted-border-color);transition:opacity 0.15s;" title="Click to view original frame">View<br>frame</button>';

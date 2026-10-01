@@ -70,7 +70,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 
 	// Register UI handlers (if enabled).
 	if cfg.EnableUI {
-		uiHandler := fhttp.NewUIHandler(faceService, cfg.EnableUI)
+		uiHandler := fhttp.NewUIHandler(faceService, cfg.EnableUI, cfg.RTSPURL)
 		uiHandler.RegisterUIHandlers(mux)
 		// Make the API mux available for in-process UI API proxying.
 		fhttp.SetAPIMux(mux)

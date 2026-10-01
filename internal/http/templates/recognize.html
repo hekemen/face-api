@@ -1,32 +1,117 @@
 {{template "head" .}}
 {{template "subpageHeader" .}}
 <a href="./" class="back-link">← Dashboard</a>
-<form method="POST" action="recognize" enctype="multipart/form-data" id="recognizeForm">
-  <label for="image">Image:</label>
-  <input type="file" id="image" name="image" accept="image/*" required>
 
-  <details id="cameraSection" data-camera>
-    <summary>Use webcam</summary>
-    <div id="cameraStage" hidden>
-      <video id="cameraVideo" muted playsinline autoplay></video>
-      <canvas id="cameraCanvas"></canvas>
-      <div>
-        <button type="button" id="cameraCaptureBtn">Capture photo</button>
-        <button type="button" class="secondary" id="cameraStopBtn">Stop camera</button>
+<form method="POST" action="recognize" enctype="multipart/form-data" id="recognizeForm">
+  <!-- shared image input (written by file picker or camera script) -->
+  <input type="file" id="image" name="image" accept="image/*" style="display:none;">
+
+  <nav role="tablist" aria-label="Recognition method" style="margin-bottom:0;gap:0.25rem;">
+    <button type="button" role="tab" aria-selected="true" aria-controls="tabPicture" id="btnPicture"
+            style="padding:0.5rem 1rem;border-bottom:none;border-radius:6px 6px 0 0;cursor:pointer;">Picture</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tabWebcam" id="btnWebcam"
+            style="padding:0.5rem 1rem;border-bottom:none;border-radius:6px 6px 0 0;cursor:pointer;">Webcam</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tabRtsp" id="btnRtsp"
+            style="padding:0.5rem 1rem;border-bottom:none;border-radius:6px 6px 0 0;cursor:pointer;">RTSP Stream</button>
+  </nav>
+
+  <!-- Tab panels container (keeps them all in the form) -->
+  <div style="border:1px solid var(--pico-muted-border-color);border-top:none;border-radius:0 0 6px 6px;background:var(--pico-card-background-color);padding:1rem;">
+
+    <!-- Picture tab -->
+    <div role="tabpanel" id="tabPicture" aria-labelledby="btnPicture">
+      <label for="image">Image:</label>
+      <input type="file" id="imageVisible" name="imageVisible" accept="image/*" style="display:none;"
+             oninput="document.getElementById('image').files = this.files;">
+      <button type="button" class="secondary" onclick="document.getElementById('imageVisible').click()"
+              style="margin-bottom:0.5rem;">Choose file</button>
+      <div id="preview" class="preview-container" hidden>
+        <img id="previewImg" src="" alt="Preview">
       </div>
     </div>
-    <button type="button" class="secondary" id="cameraBtn">Start camera</button>
-  </details>
 
-  <button type="submit">Recognize</button>
+    <!-- Webcam tab -->
+    <div role="tabpanel" id="tabWebcam" aria-labelledby="btnWebcam" hidden>
+      <details id="cameraSection" data-camera>
+        <summary>Use webcam</summary>
+        <div id="cameraStage" hidden>
+          <video id="cameraVideo" muted playsinline autoplay></video>
+          <canvas id="cameraCanvas"></canvas>
+          <div>
+            <button type="button" id="cameraCaptureBtn">Capture photo</button>
+            <button type="button" class="secondary" id="cameraStopBtn">Stop camera</button>
+          </div>
+        </div>
+        <button type="button" class="secondary" id="cameraBtn">Start camera</button>
+      </details>
+    </div>
+
+    <!-- RTSP tab -->
+    <div role="tabpanel" id="tabRtsp" aria-labelledby="btnRtsp" hidden>
+      <p>
+        {{if .RTSPURL}}
+          <strong>RTSP URL:</strong> {{.RTSPURL}}
+        {{else}}
+          <span style="color:var(--pico-warning);">RTSP URL is not configured. Set the <code>RTSP_URL</code> environment variable.</span>
+        {{end}}
+      </p>
+      <input type="hidden" name="rtsp_url" value="{{.RTSPURL}}">
+    </div>
+
+  </div>
+
+  <div style="margin-top:1rem;">
+    <button type="submit">Recognize</button>
+    <button type="button" id="rtspSubmitBtn" class="secondary" {{if not .RTSPURL}}disabled{{end}}
+            style="{{if not .RTSPURL}}visibility:hidden;{{end}}">Check stream</button>
+  </div>
 </form>
-<div id="preview" class="preview-container" hidden>
-  <img id="previewImg" src="" alt="Preview">
-</div>
+
 {{if .Result}}
 <div class="result {{.Class}}">{{.Result}}</div>
 {{end}}
+
 {{template "camera" .}}
 {{template "imagepreview" .}}
+
+<script>
+(function() {
+  'use strict';
+  var tabs = ['Picture', 'Webcam', 'Rtsp'];
+  var forms = document.querySelectorAll('[role="tablist"] [role="tab"]');
+  var panels = tabs.map(function(t) { return document.getElementById('tab' + t); });
+  var submitBtn = document.querySelector('[type="submit"]');
+  var rtspBtn = document.getElementById('rtspSubmitBtn');
+
+  function switchTab(index) {
+    forms.forEach(function(btn, i) {
+      btn.setAttribute('aria-selected', i === index ? 'true' : 'false');
+    });
+    panels.forEach(function(panel, i) {
+      panel.hidden = (i !== index);
+    });
+    // Show/hide the standard submit button (only for Picture and Webcam)
+    if (submitBtn) submitBtn.style.display = (index < 2) ? '' : 'none';
+  }
+
+  forms.forEach(function(btn, i) {
+    btn.addEventListener('click', function() { switchTab(i); });
+  });
+
+  // RTSP submit button: submit the form via JavaScript to avoid required validation
+  if (rtspBtn) {
+    rtspBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      var form = document.getElementById('recognizeForm');
+      if (form) form.submit();
+    });
+  }
+
+  // Show Webcam tab's camera section if it exists and the tab is switched to
+  // (cameraSection uses details/summary which auto-hides)
+  var cameraSection = document.getElementById('cameraSection');
+})();
+</script>
+
 {{template "foot" .}}
 {{template "clockScript" .}}

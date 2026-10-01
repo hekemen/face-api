@@ -215,7 +215,8 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
         if (data.total_matched !== undefined) document.getElementById('statMatched').textContent = data.total_matched;
         if (data.total_no_face !== undefined) document.getElementById('statNoFace').textContent = data.total_no_face;
         if (data.total_not_matched !== undefined) document.getElementById('statNotMatched').textContent = data.total_not_matched;
-        if (data.total_collected !== undefined) document.getElementById('statCollected').textContent = data.total_collected;
+        var collectedEl = document.getElementById('statCollected');
+        if (data.total_collected !== undefined && collectedEl) collectedEl.textContent = data.total_collected;
       })
       .catch(function() {});
   }

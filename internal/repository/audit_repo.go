@@ -178,7 +178,8 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 
 			totalCount++
 			// Only build and keep entries within the requested page.
-			// Do not include FaceImage or Embedding to keep the response lean.
+			// Include FaceImage so the frontend can render thumbnails directly;
+			// omit Embedding (too large for list view) — lazy-loaded if needed.
 			if totalCount <= pageUpper && totalCount > pageLower {
 				all = append(all, domain.AuditEntry{
 					Time:       parseTime(j.Time),
@@ -188,6 +189,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 					Matched:    j.Matched,
 					Status:     j.Status,
 					DurationMs: j.DurationMs,
+					FaceImage:  j.FaceImage,
 					HasFace:    j.FaceImage != "",
 				})
 			}

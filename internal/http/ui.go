@@ -22,19 +22,21 @@ var embeddedTemplates embed.FS
 
 // UIHandler handles the web interface at /ui/.
 type UIHandler struct {
-	svc        domain.FaceService
-	enableUI   bool
-	gitVersion string
-	githubURL  string
+	svc         domain.FaceService
+	enableUI    bool
+	gitVersion  string
+	githubURL   string
+	rtspURL     string
 }
 
 // NewUIHandler creates a UI handler. Set enableUI to false to disable.
-func NewUIHandler(svc domain.FaceService, enableUI bool) *UIHandler {
+func NewUIHandler(svc domain.FaceService, enableUI bool, rtspURL string) *UIHandler {
 	return &UIHandler{
 		svc:        svc,
 		enableUI:   enableUI,
 		gitVersion: "v0.0.8",
 		githubURL:  "https://github.com/hekemen/face-api",
+		rtspURL:    rtspURL,
 	}
 }
 
@@ -161,6 +163,7 @@ type uiPageData struct {
 	TotalCollected     int
 	GitVersion         string
 	GitHubURL          string
+	RTSPURL            string
 }
 
 func (h *UIHandler) renderIndex(w http.ResponseWriter, r *http.Request) {
@@ -263,12 +266,12 @@ func (h *UIHandler) handleUIEnroll(w http.ResponseWriter, r *http.Request) {
 
 func (h *UIHandler) handleUIRecognize(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		h.renderTemplate(w, "recognize.html", uiPageData{})
+		h.renderTemplate(w, "recognize.html", uiPageData{RTSPURL: h.rtspURL})
 		return
 	}
 
 	result, class := h.proxyAPI(w, r, "/recognize")
-	page := uiPageData{Result: result, Class: class}
+	page := uiPageData{Result: result, Class: class, RTSPURL: h.rtspURL}
 	if class == "" {
 		var resp domain.RecognitionResult
 		if err := json.Unmarshal([]byte(result), &resp); err == nil {
