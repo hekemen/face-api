@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Repository ports — interfaces the service depends on for data access.
 
@@ -24,17 +27,32 @@ type AuditRepository interface {
 	Append(entries []AuditEntry) error
 	// Recent returns the newest n entries (newest first).
 	Recent(n int) ([]AuditEntry, error)
-	// ListPaginated returns a page of entries with filtering support.
-	ListPaginated(opts ListPaginatedOpts) ([]AuditEntry, int, error)
+	// ListPaginated returns a page of entries with filtering support, plus
+	// a sorted list of distinct non-empty user names found across all matching entries.
+	ListPaginated(opts ListPaginatedOpts) ([]AuditEntry, int, []string, error)
 	// CountAll returns the total number of audit entries.
 	CountAll() (int, error)
 	// ListUnmatched returns the newest n unmatched entries (not_matched only).
 	ListUnmatched(n int) ([]AuditEntry, error)
 	// ComputeStats returns aggregate statistics from all audit entries.
 	ComputeStats() (Stats, error)
+	// GetAuditFace returns the face_image (base64 JPEG) for the audit entry with the given timestamp.
+	GetAuditFace(timestamp string) (string, error)
+	// ListRecognizeEntries returns a page of recognize-only audit entries (no_face excluded),
+	// optionally filtered by user name. Entries include face_image for matched/not_matched only.
+	ListRecognizeEntries(opts ListRecognizeEntriesOpts) ([]AuditEntry, int, error)
+	// CountRecognizeEntries returns the total count of recognize-only audit entries (no_face excluded).
+	CountRecognizeEntries() (int, error)
+	// ComputeRecognizeSummary returns aggregate statistics for recognize-only entries.
+	ComputeRecognizeSummary() (RecognizeSummaryResponse, error)
 }
 
-// ListPaginatedOpts holds filtering and pagination parameters.
+// ListRecognizeEntriesOpts holds filtering and pagination parameters for recognize-only audit entries.
+type ListRecognizeEntriesOpts struct {
+	UserFilter string // exact match on name (case-insensitive), "" for all
+	Page       int
+	PerPage    int
+}
 type ListPaginatedOpts struct {
 	NameFilter     string // substring match on name (case-insensitive)
 	EndpointFilter string // exact match on endpoint
@@ -102,11 +120,18 @@ type FaceService interface {
 	// RecentAudit returns the newest audit entries.
 	RecentAudit(n int) ([]AuditEntry, error)
 	// ListAuditPaginated returns a page of audit entries with filtering.
-	ListAuditPaginated(opts ListPaginatedOpts) ([]AuditEntry, int, error)
+	// ListAuditPaginated returns a page of audit entries with filtering, plus distinct user names.
+	ListAuditPaginated(opts ListPaginatedOpts) ([]AuditEntry, int, []string, error)
 	// ListUnmatched returns the newest n unmatched entries.
 	ListUnmatched(n int) ([]AuditEntry, error)
 	// ComputeStats returns aggregate statistics from the audit log.
 	ComputeStats() (Stats, error)
+	// GetAuditFace returns the face_image (base64 JPEG) for the audit entry with the given timestamp.
+	GetAuditFace(timestamp string) (string, error)
+	// ListRecognizeEntries returns a page of recognize-only audit entries (no_face excluded).
+	ListRecognizeEntries(opts ListRecognizeEntriesOpts) ([]AuditEntry, int, error)
+	// ComputeRecognizeStats returns aggregate statistics for recognize-only entries.
+	ComputeRecognizeStats() (RecognizeSummaryResponse, error)
 }
 
 // --- Response types ---
@@ -174,11 +199,62 @@ type AuditPaginatedResponse struct {
 
 // StatsResponse is returned by the GET /stats endpoint.
 type StatsResponse struct {
-	OperationDuration   `json:",inline"`
-	TotalChecks     int     `json:"total_checks"`
-	TotalMatched    int     `json:"total_matched"`
-	TotalNoFace     int     `json:"total_no_face"`
-	TotalNotMatched int     `json:"total_not_matched"`
-	TotalCollected  int     `json:"total_collected"`
-	LastMatched     *string `json:"last_matched"`
+	OperationDuration `json:",inline"`
+	TotalChecks       int     `json:"total_checks"`
+	TotalMatched      int     `json:"total_matched"`
+	TotalNoFace       int     `json:"total_no_face"`
+	TotalNotMatched   int     `json:"total_not_matched"`
+	TotalCollected    int     `json:"total_collected"`
+	LastMatched       *string `json:"last_matched"`
+}
+
+// RecognizeSummaryResponse is returned by GET /api/audit/recognize-summary.
+type RecognizeSummaryResponse struct {
+	OperationDuration `json:",inline"`
+	TotalRecognize    int `json:"total_recognize"`
+	TotalMatched      int `json:"total_matched"`
+	TotalNotMatched   int `json:"total_not_matched"`
+}
+
+// RecognizeListResponse is returned by GET /api/audit/recognize-list.
+type RecognizeListResponse struct {
+	OperationDuration `json:",inline"`
+	Entries           []RecognizeAuditEntry `json:"entries"`
+	TotalCount        int                   `json:"total_count"`
+	Page              int                   `json:"page"`
+	PerPage           int                   `json:"per_page"`
+	TotalPages        int                   `json:"total_pages"`
+}
+
+// RecognizeAuditEntry is an audit entry for recognize-only responses.
+// It excludes the `endpoint` field from JSON output.
+type RecognizeAuditEntry struct {
+	AuditEntry
+}
+
+// MarshalJSON excludes the Endpoint field from JSON output.
+func (e RecognizeAuditEntry) MarshalJSON() ([]byte, error) {
+	type Alias struct {
+		Time       string  `json:"time"`
+		Endpoint   string  `json:"-"`
+		Name       string  `json:"name"`
+		Similarity float32 `json:"similarity"`
+		Matched    bool    `json:"matched"`
+		DurationMs int64   `json:"duration_ms"`
+		Status     string  `json:"status,omitempty"`
+		HasFace    bool    `json:"has_face,omitempty"`
+	}
+	return json.Marshal(&struct {
+		Alias
+	}{
+		Alias: Alias{
+			Time:       e.Time.Format(time.RFC3339),
+			Name:       e.Name,
+			Similarity: e.Similarity,
+			Matched:    e.Matched,
+			DurationMs: e.DurationMs,
+			Status:     e.Status,
+			HasFace:    e.HasFace,
+		},
+	})
 }

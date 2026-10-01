@@ -16,13 +16,13 @@ const maxPicturesPerUser = 3
 
 // FaceServiceImpl implements domain.FaceService using repositories and a face processor.
 type FaceServiceImpl struct {
-	users     domain.UserRepository
-	audit     domain.AuditRepository
-	processor domain.FaceProcessor
+	users      domain.UserRepository
+	audit      domain.AuditRepository
+	processor  domain.FaceProcessor
 	rtspReader domain.RTSPReader
-	threshold float32
-	logger    *zerolog.Logger
-	mu        sync.Mutex
+	threshold  float32
+	logger     *zerolog.Logger
+	mu         sync.Mutex
 }
 
 // New creates a new FaceService.
@@ -323,18 +323,10 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 // PromoteFromAudit promotes an audit entry to an enrolled user.
 // The auditTime is the RFC3339 timestamp of the audit entry to promote.
 func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error {
-	// Check if user already exists
-	exists, err := s.users.Exists(name)
-	if err != nil {
-		return fmt.Errorf("check user existence: %w", err)
-	}
-	if exists {
-		return fmt.Errorf("user %q already exists", name)
-	}
-
 	// Load all audit entries and find the one matching the timestamp
 	allEntries, err := s.audit.Recent(10000)
 	if err != nil {
+		s.logf("promote: failed to list audit entries", "name", name, "audit_time", auditTime)
 		return fmt.Errorf("list audit entries: %w", err)
 	}
 
@@ -346,25 +338,53 @@ func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error 
 		}
 	}
 	if entry == nil {
+		s.logf("promote: audit entry not found", "name", name, "audit_time", auditTime)
 		return fmt.Errorf("audit entry %q not found", auditTime)
 	}
 	if len(entry.Embedding) == 0 {
+		s.logf("promote: audit entry has no embedding", "name", name, "audit_time", auditTime)
 		return fmt.Errorf("audit entry has no embedding (old entry, cannot promote)")
-	}
-
-	// Create the user from the audit entry
-	user := &domain.User{
-		Name:       name,
-		Embeddings: []domain.FaceEmbedding{entry.Embedding},
-		Pictures:   []string{entry.FaceImage},
-		UpdatedAt:  time.Now(),
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.users.Save(user); err != nil {
-		return fmt.Errorf("save user: %w", err)
+	s.logf("promote: starting", "name", name, "audit_time", auditTime)
+
+	u, err := s.users.GetByName(name)
+	if err != nil && err.Error() != fmt.Sprintf("user %q not found", name) {
+		s.logf("promote: failed to get user", "name", name, "error", err)
+		return fmt.Errorf("get user: %w", err)
+	}
+
+	if u != nil {
+		// User exists, append to them
+		if len(u.Embeddings) >= maxPicturesPerUser {
+			s.logf("promote: max pictures reached", "name", name, "pictures", len(u.Embeddings))
+			return fmt.Errorf("maximum %d pictures per user", maxPicturesPerUser)
+		}
+		u.Embeddings = append(u.Embeddings, entry.Embedding)
+		u.Pictures = append(u.Pictures, entry.FaceImage)
+		u.UpdatedAt = time.Now()
+		if err := s.users.Save(u); err != nil {
+			s.logf("promote: failed to save user (update)", "name", name, "error", err)
+			return fmt.Errorf("save user: %w", err)
+		}
+		s.logf("promote: updated existing user", "name", name, "total_pictures", len(u.Pictures))
+	} else {
+		// Create the user from the audit entry
+		user := &domain.User{
+			Name:       name,
+			Embeddings: []domain.FaceEmbedding{entry.Embedding},
+			Pictures:   []string{entry.FaceImage},
+			UpdatedAt:  time.Now(),
+		}
+
+		if err := s.users.Save(user); err != nil {
+			s.logf("promote: failed to save user (create)", "name", name, "error", err)
+			return fmt.Errorf("save user: %w", err)
+		}
+		s.logf("promote: created new user", "name", name)
 	}
 
 	return nil
@@ -400,7 +420,7 @@ func (s *FaceServiceImpl) RecentAudit(n int) ([]domain.AuditEntry, error) {
 	return s.audit.Recent(n)
 }
 
-func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, error) {
+func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, []string, error) {
 	return s.audit.ListPaginated(opts)
 }
 
@@ -408,8 +428,28 @@ func (s *FaceServiceImpl) ComputeStats() (domain.Stats, error) {
 	return s.audit.ComputeStats()
 }
 
+func (s *FaceServiceImpl) GetAuditFace(timestamp string) (string, error) {
+	return s.audit.GetAuditFace(timestamp)
+}
+
 func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 	return s.audit.ListUnmatched(n)
+}
+
+func (s *FaceServiceImpl) ListRecognizeEntries(opts domain.ListRecognizeEntriesOpts) ([]domain.AuditEntry, int, error) {
+	return s.audit.ListRecognizeEntries(opts)
+}
+
+func (s *FaceServiceImpl) ComputeRecognizeStats() (domain.RecognizeSummaryResponse, error) {
+	summary, err := s.audit.ComputeRecognizeSummary()
+	if err != nil {
+		return domain.RecognizeSummaryResponse{}, err
+	}
+	return domain.RecognizeSummaryResponse{
+		TotalRecognize:  summary.TotalRecognize,
+		TotalMatched:    summary.TotalMatched,
+		TotalNotMatched: summary.TotalNotMatched,
+	}, nil
 }
 
 // isConnectionError checks if an error is likely a connection issue.

@@ -208,7 +208,7 @@ footer { text-align: center; padding: 1rem; color: var(--pico-muted-color); font
 
   // Stats auto-refresh
   function updateStats() {
-    fetch('/stats')
+    fetch('../stats')
       .then(function(resp) { return resp.json(); })
       .then(function(data) {
         if (data.total_checks !== undefined) document.getElementById('statTotal').textContent = data.total_checks;

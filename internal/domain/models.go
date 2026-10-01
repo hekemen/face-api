@@ -18,15 +18,16 @@ type User struct {
 
 // AuditEntry records a single face scan attempt for the audit log.
 type AuditEntry struct {
-	Time       time.Time `json:"time"`
-	Endpoint   string    `json:"endpoint"`
-	Name       string    `json:"name"`
-	Similarity float32   `json:"similarity"`
-	Matched    bool      `json:"matched"`
-	Status     string    `json:"status"`
-	DurationMs int64     `json:"duration_ms"`
-	FaceImage  string    `json:"face_image"`  // base64-encoded cropped face JPEG
+	Time       time.Time     `json:"time"`
+	Endpoint   string        `json:"endpoint"`
+	Name       string        `json:"name"`
+	Similarity float32       `json:"similarity"`
+	Matched    bool          `json:"matched"`
+	Status     string        `json:"status"`
+	DurationMs int64         `json:"duration_ms"`
+	FaceImage  string        `json:"-"`         // base64-encoded image; lazy-loaded via /api/audit/face
 	Embedding  FaceEmbedding `json:"embedding"` // 512-dim embedding (for promotion)
+	HasFace    bool          `json:"has_face"`  // true if a face was detected (not "no_face")
 }
 
 // Audit entry status constants.

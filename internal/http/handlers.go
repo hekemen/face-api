@@ -50,7 +50,10 @@ func (h *Handlers) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /users/", h.handleDeleteUser)
 	mux.HandleFunc("GET /audit", h.handleListAudit)
 	mux.HandleFunc("GET /api/audit", h.handleListAuditPaginated)
+	mux.HandleFunc("GET /api/audit/face", h.handleGetAuditFace)
 	mux.HandleFunc("GET /api/audit-unmatched", h.handleAuditUnmatched)
+	mux.HandleFunc("GET /api/audit/recognize-summary", h.handleRecognizeSummary)
+	mux.HandleFunc("GET /api/audit/recognize-list", h.handleRecognizeList)
 	mux.HandleFunc("GET /stats", h.handleListStats)
 	mux.HandleFunc("POST /audit/promote", h.handlePromoteFromAudit)
 	mux.HandleFunc("GET /healthz", h.handleHealthz)
@@ -375,7 +378,7 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 		perPage = 100
 	}
 
-	entries, totalCount, err := h.svc.ListAuditPaginated(domain.ListPaginatedOpts{
+	entries, totalCount, users, err := h.svc.ListAuditPaginated(domain.ListPaginatedOpts{
 		NameFilter:     nameFilter,
 		EndpointFilter: endpointFilter,
 		MatchedFilter:  matchedFilter,
@@ -390,6 +393,30 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 	if entries == nil {
 		entries = []domain.AuditEntry{}
 	}
+	if users == nil {
+		users = []string{}
+	}
+
+	// Merge enrolled user names so the audit page shows all enrolled users,
+	// not just names that appear in audit entries.
+	allUsers, userErr := h.svc.ListUsers()
+	if userErr == nil && allUsers != nil {
+		seen := make(map[string]bool)
+		for _, u := range allUsers {
+			if u != nil && u.Name != "" {
+				seen[u.Name] = true
+			}
+		}
+		for _, n := range users {
+			seen[n] = true
+		}
+		merged := make([]string, 0, len(seen))
+		for n := range seen {
+			merged = append(merged, n)
+		}
+		sort.Strings(merged)
+		users = merged
+	}
 
 	totalPages := (totalCount + perPage - 1) / perPage
 	if totalPages == 0 {
@@ -397,12 +424,37 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"entries":      entries,
-		"total_count":  totalCount,
-		"page":         page,
-		"per_page":     perPage,
-		"total_pages":  totalPages,
-		"duration_ms":  time.Since(start).Milliseconds(),
+		"entries":     entries,
+		"total_count": totalCount,
+		"page":        page,
+		"per_page":    perPage,
+		"total_pages": totalPages,
+		"users":       users,
+		"duration_ms": time.Since(start).Milliseconds(),
+	})
+}
+
+// handleGetAuditFace returns the face image (base64 JPEG) for a given audit entry.
+func (h *Handlers) handleGetAuditFace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	timestamp := r.URL.Query().Get("id")
+	if timestamp == "" {
+		writeError(w, http.StatusBadRequest, "Missing 'id' query parameter")
+		return
+	}
+
+	faceImage, err := h.svc.GetAuditFace(timestamp)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"face_image": faceImage,
 	})
 }
 
@@ -463,6 +515,7 @@ func (h *Handlers) handlePromoteFromAudit(w http.ResponseWriter, r *http.Request
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logger.Warn().Err(err).Msg("promote: failed to decode request body")
 		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
@@ -477,14 +530,13 @@ func (h *Handlers) handlePromoteFromAudit(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	h.logger.Info().Str("name", req.Name).Str("audit_time", auditTime).Msg("promote: starting")
+
 	start := time.Now()
 
 	if err := h.svc.PromoteFromAudit(auditTime, req.Name); err != nil {
+		h.logger.Error().Err(err).Str("name", req.Name).Str("audit_time", auditTime).Msg("promote: failed")
 		msg := err.Error()
-		if strings.Contains(msg, "already exists") {
-			writeError(w, http.StatusConflict, msg)
-			return
-		}
 		if strings.Contains(msg, "not found") {
 			writeError(w, http.StatusNotFound, msg)
 			return
@@ -492,6 +544,8 @@ func (h *Handlers) handlePromoteFromAudit(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+
+	h.logger.Info().Str("name", req.Name).Str("audit_time", auditTime).Dur("duration_ms", time.Since(start)).Msg("promote: success")
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":      "promoted",
@@ -507,6 +561,82 @@ func (h *Handlers) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	// For now, always ready. A real implementation would check bbolt health.
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleRecognizeSummary returns aggregate stats for recognize-only audit entries.
+func (h *Handlers) handleRecognizeSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	start := time.Now()
+
+	summary, err := h.svc.ComputeRecognizeStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	summary.DurationMs = time.Since(start).Milliseconds()
+
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleRecognizeList returns a paginated list of recognize-only audit entries.
+func (h *Handlers) handleRecognizeList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	start := time.Now()
+
+	userFilter := r.URL.Query().Get("user")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+
+	if page <= 0 {
+		page = 1
+	}
+	if perPage <= 0 {
+		perPage = 20
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	entries, totalCount, err := h.svc.ListRecognizeEntries(domain.ListRecognizeEntriesOpts{
+		UserFilter: userFilter,
+		Page:       page,
+		PerPage:    perPage,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []domain.AuditEntry{}
+	}
+
+	// Strip endpoint field for recognize-only responses.
+	recognizeEntries := make([]domain.RecognizeAuditEntry, len(entries))
+	for i, e := range entries {
+		recognizeEntries[i] = domain.RecognizeAuditEntry{AuditEntry: e}
+	}
+
+	totalPages := (totalCount + perPage - 1) / perPage
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
+	writeJSON(w, http.StatusOK, domain.RecognizeListResponse{
+		OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+		Entries:           recognizeEntries,
+		TotalCount:        totalCount,
+		Page:              page,
+		PerPage:           perPage,
+		TotalPages:        totalPages,
+	})
 }
 
 // apiMux is the main API mux, set after handler registration for UI in-process proxying.

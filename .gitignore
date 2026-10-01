@@ -14,3 +14,12 @@ faces.db
 *.jpg
 *.png
 payload.raw
+
+# Playwright / Node tooling
+node_modules/
+test-results/
+.playwright-mcp/
+
+# Local run / deploy artifacts
+server.log
+manifests.yaml
