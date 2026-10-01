@@ -75,6 +75,10 @@ extraEnv:
     value: "Face API"
   - name: MQTT_QUEUE_DEPTH
     value: "16"
+  - name: API_TOKEN
+    value: ""
+  - name: MAX_UPLOAD_BYTES
+    value: "10485760"
 
 # Kubernetes liveness/readiness probes. Both hit lightweight HTTP endpoints
 # (/healthz returns 200 whenever the process is alive; /readyz returns 200 only

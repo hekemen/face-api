@@ -16,15 +16,17 @@ import (
 
 // Config holds the configuration needed to wire the face API.
 type Config struct {
-	DB           *bolt.DB
-	Logger       zerolog.Logger
-	RT           *ort.Runtime
-	ORTEnv       *ort.Env
-	DetSession   *ort.Session
-	RecSession   *ort.Session
-	RTSPURL      string
-	EnableUI     bool
-	Threshold    float32
+	DB             *bolt.DB
+	Logger         zerolog.Logger
+	RT             *ort.Runtime
+	ORTEnv         *ort.Env
+	DetSession     *ort.Session
+	RecSession     *ort.Session
+	RTSPURL        string
+	EnableUI       bool
+	Threshold      float32
+	AuthToken      string
+	MaxUploadBytes int64
 }
 
 // FaceAPI is the fully wired-up face API. Callers only interact with the
@@ -58,6 +60,8 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.RTSPURL,
 		rtspReader,
 		cfg.EnableUI,
+		cfg.AuthToken,
+		cfg.MaxUploadBytes,
 		cfg.Logger,
 	)
 
@@ -76,10 +80,13 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		fhttp.SetAPIMux(mux)
 	}
 
-	handler := mux
+	// Wrap with middleware: auth first (outer), size limit (inner).
+	var finalHandler http.Handler
+	finalHandler = fhttp.NewAuthMiddleware(mux, cfg.AuthToken, cfg.EnableUI)
+	finalHandler = fhttp.NewMaxSizeMiddleware(finalHandler, cfg.MaxUploadBytes)
 
 	return &FaceAPI{
-		Handler:     handler,
+		Handler:     finalHandler,
 		MQTTReady:   true,
 		CheckStream: faceService.CheckStream,
 	}, nil

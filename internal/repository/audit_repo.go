@@ -114,7 +114,7 @@ func (r *AuditRepository) Recent(n int) ([]domain.AuditEntry, error) {
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
 				Embedding:  j.Embedding,
-				HasFace:    j.FaceImage != "",
+				HasFace:    j.FaceImage != "" && j.Status != domain.AuditStatusNoFace,
 			})
 		}
 		return nil
@@ -190,7 +190,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 					Status:     j.Status,
 					DurationMs: j.DurationMs,
 					FaceImage:  j.FaceImage,
-					HasFace:    j.FaceImage != "",
+					HasFace:    j.FaceImage != "" && j.Status != domain.AuditStatusNoFace,
 				})
 			}
 			// Past the requested page: stop iterating.

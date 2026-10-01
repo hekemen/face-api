@@ -121,6 +121,14 @@
     var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
     var selectedClass = (selectedEntry && selectedEntry.time === entry.time) ? ' selected-entry' : '';
+
+    // Enroll button: only for entries that have a face AND are not yet matched
+    var enrollBtn = '';
+    if (entry.has_face && !entry.matched) {
+      var btnLabel = entry.name ? 'Update User' : 'Enroll User';
+      enrollBtn = '<button class="enroll-btn" data-time="' + entry.time + '" style="padding:0.3rem 0.6rem;cursor:pointer;border:1px solid var(--pico-primary);border-radius:4px;background:var(--pico-primary-background-color);color:var(--pico-primary);font-size:0.8rem;white-space:nowrap;flex-shrink:0;" title="Enroll or update this user">⬇ ' + btnLabel + '</button>';
+    }
+
     return '<div class="entry' + selectedClass + '" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
       img +
       '<div style="flex:1;min-width:0;">' +
@@ -131,6 +139,7 @@
         statusBadge(entry.status) +
         '<div style="font-size:0.8rem;color:var(--pico-muted-color);">similarity: ' + similarity + '</div>' +
       '</div>' +
+      enrollBtn +
     '</div>';
   }
 
@@ -348,6 +357,15 @@
               // No-face entry: open modal directly to load the original frame
               openFaceModal(id);
             }
+          });
+        });
+
+        // Bind click handlers for enroll buttons (opens promote modal)
+        content.querySelectorAll('.enroll-btn').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var id = this.getAttribute('data-time');
+            var entry = data.entries.find(function(e) { return e.time === id; });
+            if (entry) selectEntry(entry);
           });
         });
 

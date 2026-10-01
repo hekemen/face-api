@@ -229,7 +229,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 				Reason:            reason,
 			}, nil
 		}
-		// No-face: write audit entry with full frame.
+		// No-face: write audit entry (no face image stored — HasFace must stay false).
 		_ = s.audit.Append([]domain.AuditEntry{{
 			Time:       time.Now(),
 			Endpoint:   "stream-check",
@@ -238,7 +238,6 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Matched:    false,
 			Status:     domain.AuditStatusNoFace,
 			DurationMs: time.Since(start).Milliseconds(),
-			FaceImage:  base64.StdEncoding.EncodeToString(imageData),
 		}})
 		s.logf("no face detected", "timestamp", time.Now().Format(time.RFC3339))
 		return &domain.StreamCheckResult{

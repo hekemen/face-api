@@ -22,21 +22,25 @@ type RTSPReader interface {
 
 // Handlers holds the HTTP handlers for the face API.
 type Handlers struct {
-	svc        domain.FaceService
-	rtspURL    string
-	rtspReader RTSPReader
-	enableUI   bool
-	logger     zerolog.Logger
+	svc           domain.FaceService
+	rtspURL       string
+	rtspReader    RTSPReader
+	enableUI      bool
+	token         string
+	maxUploadBytes int64
+	logger        zerolog.Logger
 }
 
 // NewHandlers creates a new Handlers instance.
-func NewHandlers(svc domain.FaceService, rtspURL string, rtspReader RTSPReader, enableUI bool, logger zerolog.Logger) *Handlers {
+func NewHandlers(svc domain.FaceService, rtspURL string, rtspReader RTSPReader, enableUI bool, token string, maxUploadBytes int64, logger zerolog.Logger) *Handlers {
 	return &Handlers{
-		svc:        svc,
-		rtspURL:    rtspURL,
-		rtspReader: rtspReader,
-		enableUI:   enableUI,
-		logger:     logger,
+		svc:            svc,
+		rtspURL:        rtspURL,
+		rtspReader:     rtspReader,
+		enableUI:       enableUI,
+		token:          token,
+		maxUploadBytes: maxUploadBytes,
+		logger:         logger,
 	}
 }
 
@@ -58,6 +62,9 @@ func (h *Handlers) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /audit/promote", h.handlePromoteFromAudit)
 	mux.HandleFunc("GET /healthz", h.handleHealthz)
 	mux.HandleFunc("GET /readyz", h.handleReadyz)
+
+	// Register auth UI handlers (login/logout).
+	(&AuthUIHandler{token: h.token, enableUI: h.enableUI}).RegisterAuthHandlers(mux)
 }
 
 // --- Helper functions ---

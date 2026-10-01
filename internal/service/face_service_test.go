@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -223,9 +222,9 @@ func TestCheckStreamImageNoFaceWritesAuditEntry(t *testing.T) {
 	if e.Similarity != 0 {
 		t.Errorf("Similarity = %f, want 0", e.Similarity)
 	}
-	// FaceImage should be the full frame (not cropped).
-	if e.FaceImage != string(base64.StdEncoding.EncodeToString(fullFrame)) {
-		t.Errorf("FaceImage = %q, want %q", e.FaceImage, string(base64.StdEncoding.EncodeToString(fullFrame)))
+	// FaceImage must be empty for no-face entries (HasFace must stay false).
+	if e.FaceImage != "" {
+		t.Errorf("FaceImage = %q, want empty", e.FaceImage)
 	}
 }
 
@@ -374,7 +373,7 @@ func TestCheckStreamImageNoFaceNotConnectionError(t *testing.T) {
 		t.Errorf("status = %q, want %q", result.Status, "not ok")
 	}
 
-	// Should write audit entry with full frame.
+	// Should write audit entry with no face image (HasFace must stay false).
 	if len(audit.entries) != 1 {
 		t.Fatalf("expected 1 audit entry, got %d", len(audit.entries))
 	}
@@ -383,8 +382,8 @@ func TestCheckStreamImageNoFaceNotConnectionError(t *testing.T) {
 	if e.Status != domain.AuditStatusNoFace {
 		t.Errorf("Status = %q, want %q", e.Status, domain.AuditStatusNoFace)
 	}
-	if e.FaceImage != string(base64.StdEncoding.EncodeToString([]byte("fake-frame"))) {
-		t.Errorf("FaceImage = %q, want %q", e.FaceImage, string(base64.StdEncoding.EncodeToString([]byte("fake-frame"))))
+	if e.FaceImage != "" {
+		t.Errorf("FaceImage = %q, want empty", e.FaceImage)
 	}
 }
 

@@ -84,17 +84,30 @@ func main() {
 		}
 	}
 
+	// API token for authentication (empty = disabled).
+	apiToken := os.Getenv("API_TOKEN")
+
+	// Maximum upload size in bytes (default: 10 MiB).
+	maxUploadBytes := int64(10 * 1024 * 1024)
+	if m := os.Getenv("MAX_UPLOAD_BYTES"); m != "" {
+		if v, err := strconv.ParseInt(m, 10, 64); err == nil && v > 0 {
+			maxUploadBytes = v
+		}
+	}
+
 	// 3. Wire up the hexagonal architecture
 	faceAPI, err := di.NewFaceAPI(di.Config{
-		DB:         kvDB,
-		Logger:     logger,
-		RT:         rt,
-		ORTEnv:     ortEnv,
-		DetSession: detSess,
-		RecSession: recSess,
-		RTSPURL:    os.Getenv("RTSP_URL"),
-		EnableUI:   enableUI,
-		Threshold:  threshold,
+		DB:             kvDB,
+		Logger:         logger,
+		RT:             rt,
+		ORTEnv:         ortEnv,
+		DetSession:     detSess,
+		RecSession:     recSess,
+		RTSPURL:        os.Getenv("RTSP_URL"),
+		EnableUI:       enableUI,
+		Threshold:      threshold,
+		AuthToken:      apiToken,
+		MaxUploadBytes: maxUploadBytes,
 	})
 	if err != nil {
 		log.Fatalf("Failed to wire face API: %v", err)

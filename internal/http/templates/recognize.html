@@ -48,13 +48,6 @@
 
     <!-- RTSP tab -->
     <div role="tabpanel" id="tabRtsp" aria-labelledby="btnRtsp" hidden>
-      <p>
-        {{if .RTSPURL}}
-          <strong>RTSP URL:</strong> {{.RTSPURL}}
-        {{else}}
-          <span style="color:var(--pico-warning);">RTSP URL is not configured. Set the <code>RTSP_URL</code> environment variable.</span>
-        {{end}}
-      </p>
       <input type="hidden" name="rtsp_url" value="{{.RTSPURL}}">
     </div>
 
