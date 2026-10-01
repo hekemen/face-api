@@ -178,16 +178,42 @@
     var backdrop = document.getElementById('modalBackdrop');
     var modal = document.getElementById('promoteModal');
     document.getElementById('promoteThumb').src = '';
-    document.getElementById('promoteName').value = '';
-    document.getElementById('promoteName').style.display = 'none';
-    document.getElementById('promoteUserSelect').value = 'new';
-    document.getElementById('promoteUserSelect').style.display = 'block';
     document.getElementById('promoteStatus').textContent = '';
     document.getElementById('promoteBtn').textContent = 'Enroll/Update';
     document.getElementById('promoteBtn').disabled = false;
     backdrop.style.display = 'block';
     modal.style.display = 'block';
-    document.getElementById('promoteUserSelect').focus();
+
+    var promoteNameInput = document.getElementById('promoteName');
+    var promoteUserSelect = document.getElementById('promoteUserSelect');
+    var entryName = entry && entry.name ? entry.name : '';
+
+    // Pre-populate name if the entry already has one
+    if (entryName) {
+      promoteNameInput.value = entryName;
+      // Try to find matching option; default to "new" if not found
+      var matched = false;
+      for (var i = 0; i < promoteUserSelect.options.length; i++) {
+        if (promoteUserSelect.options[i].value === entryName) {
+          promoteUserSelect.value = entryName;
+          promoteNameInput.style.display = 'none';
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        // Entry name doesn't match enrolled users; show "new" with the name filled in
+        promoteUserSelect.value = 'new';
+        promoteNameInput.style.display = 'block';
+      }
+    } else {
+      promoteNameInput.value = '';
+      promoteNameInput.style.display = 'none';
+      promoteUserSelect.value = 'new';
+      promoteUserSelect.style.display = 'block';
+    }
+
+    promoteUserSelect.focus();
     // Load the face image
     loadAndOpenFaceModal(entry.time, document.getElementById('promoteThumb'));
   }
@@ -290,6 +316,8 @@
   }
 
   function render() {
+    document.getElementById('auditInfo').textContent = 'Loading audit data...';
+    document.getElementById('auditContent').innerHTML = '';
     fetch(buildURL())
       .then(function(r) { return r.json(); })
       .then(function(data) {

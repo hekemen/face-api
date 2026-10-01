@@ -123,6 +123,8 @@ func (r *AuditRepository) Recent(n int) ([]domain.AuditEntry, error) {
 }
 
 // ListPaginated returns a page of entries with filtering support.
+// Names are not collected here to avoid a full-scan of all audit entries.
+// The HTTP handler uses ListUsers() for the filter dropdown instead.
 func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, []string, error) {
 	if opts.PerPage <= 0 {
 		opts.PerPage = 20
@@ -133,7 +135,6 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 
 	var all []domain.AuditEntry
 	totalCount := 0
-	nameSet := make(map[string]struct{})
 
 	// Compute page boundaries (1-based indices).
 	pageLower := (opts.Page - 1) * opts.PerPage
@@ -146,18 +147,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 		}
 		c := b.Cursor()
 
-		// Collect distinct non-empty names from ALL entries (full scan, no early exit).
-		for _, v := c.Last(); v != nil; _, v = c.Prev() {
-			var j auditEntryJSON
-			if err := json.Unmarshal(v, &j); err != nil {
-				continue
-			}
-			if j.Name != "" {
-				nameSet[j.Name] = struct{}{}
-			}
-		}
-
-		// Re-scan: iterate newest-first, count matching entries and collect the requested page.
+		// Iterate newest-first, count matching entries and collect the requested page.
 		// Early exit: once we've passed the requested page (totalCount > pageUpper),
 		// stop iterating—no need to process older entries we'll never return.
 		for _, v := c.Last(); v != nil; _, v = c.Prev() {
@@ -198,7 +188,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 					Matched:    j.Matched,
 					Status:     j.Status,
 					DurationMs: j.DurationMs,
-					HasFace:    j.Status != domain.AuditStatusNoFace,
+					HasFace:    j.FaceImage != "",
 				})
 			}
 			// Past the requested page: stop iterating.
@@ -212,21 +202,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 		return nil, 0, nil, err
 	}
 
-	// Convert name set to sorted slice.
-	var names []string
-	for n := range nameSet {
-		names = append(names, n)
-	}
-	// Sort names for consistent ordering.
-	for i := 0; i < len(names); i++ {
-		for j := i + 1; j < len(names); j++ {
-			if names[i] > names[j] {
-				names[i], names[j] = names[j], names[i]
-			}
-		}
-	}
-
-	return all, totalCount, names, nil
+	return all, totalCount, nil, nil
 }
 
 // CountAll returns the total number of audit entries.

@@ -393,29 +393,19 @@ func (h *Handlers) handleListAuditPaginated(w http.ResponseWriter, r *http.Reque
 	if entries == nil {
 		entries = []domain.AuditEntry{}
 	}
-	if users == nil {
-		users = []string{}
-	}
+	users = nil // repo no longer collects names; use ListUsers() for the filter dropdown.
 
-	// Merge enrolled user names so the audit page shows all enrolled users,
-	// not just names that appear in audit entries.
+	// Get enrolled users for the filter dropdown.
 	allUsers, userErr := h.svc.ListUsers()
 	if userErr == nil && allUsers != nil {
-		seen := make(map[string]bool)
+		userNames := make([]string, 0, len(allUsers))
 		for _, u := range allUsers {
 			if u != nil && u.Name != "" {
-				seen[u.Name] = true
+				userNames = append(userNames, u.Name)
 			}
 		}
-		for _, n := range users {
-			seen[n] = true
-		}
-		merged := make([]string, 0, len(seen))
-		for n := range seen {
-			merged = append(merged, n)
-		}
-		sort.Strings(merged)
-		users = merged
+		sort.Strings(userNames)
+		users = userNames
 	}
 
 	totalPages := (totalCount + perPage - 1) / perPage
