@@ -25,7 +25,7 @@ type AuditEntry struct {
 	Matched    bool          `json:"matched"`
 	Status     string        `json:"status"`
 	DurationMs int64         `json:"duration_ms"`
-	FaceImage  string        `json:"-"`         // base64-encoded image; lazy-loaded via /api/audit/face
+	FaceImage  string        `json:"face_image,omitempty"` // base64-encoded image; lazy-loaded via /api/audit/face
 	Embedding  FaceEmbedding `json:"embedding"` // 512-dim embedding (for promotion)
 	HasFace    bool          `json:"has_face"`  // true if a face was detected (not "no_face")
 }
