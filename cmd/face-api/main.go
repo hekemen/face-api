@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -85,7 +86,7 @@ func main() {
 	}
 
 	// API token for authentication (empty = disabled).
-	apiToken := os.Getenv("API_TOKEN")
+	apiToken := strings.TrimSpace(os.Getenv("API_TOKEN"))
 
 	// Maximum upload size in bytes (default: 10 MiB).
 	maxUploadBytes := int64(10 * 1024 * 1024)

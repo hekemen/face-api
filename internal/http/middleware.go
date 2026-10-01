@@ -68,7 +68,7 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// API routes: check X-Token header.
 	if m.token != "" {
-		got := r.Header.Get("X-Token")
+		got := strings.TrimSpace(r.Header.Get("X-Token"))
 		if subtle.ConstantTimeCompare([]byte(got), []byte(m.token)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
