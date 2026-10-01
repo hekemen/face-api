@@ -418,7 +418,7 @@ func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	}
 
 	t.Log("=== Step 3: Verifying audit entry with status=no_face ===")
-	auditResp, err := http.Get(rtspBaseURL + "/api/audit?per_page=50")
+	auditResp, err := http.Get(rtspBaseURL + "/audit")
 	if err != nil {
 		t.Fatalf("audit request failed: %v", err)
 	}

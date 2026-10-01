@@ -114,6 +114,7 @@ func (r *AuditRepository) Recent(n int) ([]domain.AuditEntry, error) {
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
 				Embedding:  j.Embedding,
+				HasFace:    j.FaceImage != "",
 			})
 		}
 		return nil
