@@ -1,8 +1,11 @@
 package service
 
 import (
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"h2hsecure.com/face/internal/domain"
 )
@@ -88,8 +91,14 @@ func (m *mockAuditRepo) Recent(n int) ([]domain.AuditEntry, error) {
 	return m.entries, nil
 }
 
-func (m *mockAuditRepo) ListPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, error) {
-	return m.entries, len(m.entries), nil
+func (m *mockAuditRepo) ListPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, []string, error) {
+	var names []string
+	for _, e := range m.entries {
+		if e.Name != "" {
+			names = append(names, e.Name)
+		}
+	}
+	return m.entries, len(m.entries), names, nil
 }
 
 func (m *mockAuditRepo) CountAll() (int, error) {
@@ -102,6 +111,76 @@ func (m *mockAuditRepo) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 
 func (m *mockAuditRepo) ComputeStats() (domain.Stats, error) {
 	return domain.Stats{}, nil
+}
+
+func (m *mockAuditRepo) GetAuditFace(timestamp string) (string, error) {
+	return "", nil
+}
+
+func (m *mockAuditRepo) ListRecognizeEntries(opts domain.ListRecognizeEntriesOpts) ([]domain.AuditEntry, int, error) {
+	var filtered []domain.AuditEntry
+	for _, e := range m.entries {
+		if e.Endpoint != "recognize" {
+			continue
+		}
+		if e.Status == domain.AuditStatusNoFace {
+			continue
+		}
+		if opts.UserFilter != "" && strings.ToLower(e.Name) != strings.ToLower(opts.UserFilter) {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	if filtered == nil {
+		filtered = []domain.AuditEntry{}
+	}
+	total := len(filtered)
+	pageLower := (opts.Page - 1) * opts.PerPage
+	pageUpper := opts.Page * opts.PerPage
+	if opts.Page <= 0 {
+		opts.Page = 1
+	}
+	if opts.PerPage <= 0 {
+		opts.PerPage = 20
+	}
+	var page []domain.AuditEntry
+	for i, e := range filtered {
+		if i < pageLower || i >= pageUpper {
+			continue
+		}
+		page = append(page, e)
+	}
+	return page, total, nil
+}
+
+func (m *mockAuditRepo) CountRecognizeEntries() (int, error) {
+	count := 0
+	for _, e := range m.entries {
+		if e.Endpoint == "recognize" && e.Status != domain.AuditStatusNoFace {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *mockAuditRepo) ComputeRecognizeSummary() (domain.RecognizeSummaryResponse, error) {
+	var summary domain.RecognizeSummaryResponse
+	for _, e := range m.entries {
+		if e.Endpoint != "recognize" {
+			continue
+		}
+		if e.Status == domain.AuditStatusNoFace {
+			continue
+		}
+		summary.TotalRecognize++
+		switch e.Status {
+		case domain.AuditStatusMatched:
+			summary.TotalMatched++
+		case domain.AuditStatusNotMatched:
+			summary.TotalNotMatched++
+		}
+	}
+	return summary, nil
 }
 
 // --- Tests ---
@@ -145,8 +224,8 @@ func TestCheckStreamImageNoFaceWritesAuditEntry(t *testing.T) {
 		t.Errorf("Similarity = %f, want 0", e.Similarity)
 	}
 	// FaceImage should be the full frame (not cropped).
-	if e.FaceImage != string(fullFrame) {
-		t.Errorf("FaceImage = %q, want %q", e.FaceImage, string(fullFrame))
+	if e.FaceImage != string(base64.StdEncoding.EncodeToString(fullFrame)) {
+		t.Errorf("FaceImage = %q, want %q", e.FaceImage, string(base64.StdEncoding.EncodeToString(fullFrame)))
 	}
 }
 
@@ -304,7 +383,140 @@ func TestCheckStreamImageNoFaceNotConnectionError(t *testing.T) {
 	if e.Status != domain.AuditStatusNoFace {
 		t.Errorf("Status = %q, want %q", e.Status, domain.AuditStatusNoFace)
 	}
-	if e.FaceImage != "fake-frame" {
-		t.Errorf("FaceImage = %q, want full frame", e.FaceImage)
+	if e.FaceImage != string(base64.StdEncoding.EncodeToString([]byte("fake-frame"))) {
+		t.Errorf("FaceImage = %q, want %q", e.FaceImage, string(base64.StdEncoding.EncodeToString([]byte("fake-frame"))))
+	}
+}
+
+func TestPromoteFromAuditNewUser(t *testing.T) {
+	audit := &mockAuditRepo{}
+	users := &mockUserRepo{}
+	proc := &mockProcessor{}
+	svc := New(users, audit, proc, 0.45)
+
+	now := time.Now()
+	auditTime := now.Format(time.RFC3339)
+	newEmbedding := domain.FaceEmbedding{5, 5, 5}
+	newPic := "base64-new-pic"
+
+	audit.Append([]domain.AuditEntry{{
+		Time:       now,
+		Endpoint:   "stream-check",
+		Name:       "",
+		Similarity: 0.1,
+		Matched:    false,
+		Status:     domain.AuditStatusNotMatched,
+		FaceImage:  newPic,
+		Embedding:  newEmbedding,
+	}})
+
+	err := svc.PromoteFromAudit(auditTime, "new-user")
+	if err != nil {
+		t.Fatalf("PromoteFromAudit: %v", err)
+	}
+
+	u, err := users.GetByName("new-user")
+	if err != nil {
+		t.Fatalf("could not find new user: %v", err)
+	}
+
+	if len(u.Embeddings) != 1 || domain.CosineSimilarity(u.Embeddings[0], newEmbedding) < 0.99 {
+		t.Errorf("embedding mismatch: got %v, want %v", u.Embeddings[0], newEmbedding)
+	}
+	if len(u.Pictures) != 1 || u.Pictures[0] != newPic {
+		t.Errorf("picture mismatch: got %q, want %q", u.Pictures[0], newPic)
+	}
+}
+
+func TestPromoteFromAuditExistingUser(t *testing.T) {
+	audit := &mockAuditRepo{}
+	existingEmbed := domain.FaceEmbedding{1, 1, 1}
+	existingPic := "base64-old-pic"
+	users := &mockUserRepo{
+		users: []*domain.User{
+			{
+				Name:       "alice",
+				Embeddings: []domain.FaceEmbedding{existingEmbed},
+				Pictures:   []string{existingPic},
+				UpdatedAt:  time.Now().Add(-time.Hour),
+			},
+		},
+	}
+	proc := &mockProcessor{}
+	svc := New(users, audit, proc, 0.45)
+
+	now := time.Now()
+	auditTime := now.Format(time.RFC3339)
+	newEmbedding := domain.FaceEmbedding{2, 2, 2}
+	newPic := "base64-new-pic"
+
+	audit.Append([]domain.AuditEntry{{
+		Time:       now,
+		Endpoint:   "stream-check",
+		Name:       "",
+		Similarity: 0.1,
+		Matched:    false,
+		Status:     domain.AuditStatusNotMatched,
+		FaceImage:  newPic,
+		Embedding:  newEmbedding,
+	}})
+
+	err := svc.PromoteFromAudit(auditTime, "alice")
+	if err != nil {
+		t.Fatalf("PromoteFromAudit: %v", err)
+	}
+
+	u, err := users.GetByName("alice")
+	if err != nil {
+		t.Fatalf("could not find user: %v", err)
+	}
+
+	if len(u.Embeddings) != 2 || domain.CosineSimilarity(u.Embeddings[1], newEmbedding) < 0.99 {
+		t.Errorf("second embedding mismatch: got %v, want %v", u.Embeddings[1], newEmbedding)
+	}
+	if len(u.Pictures) != 2 {
+		t.Errorf("expected 2 pictures, got %d", len(u.Pictures))
+	}
+	if u.Pictures[1] != newPic {
+		t.Errorf("second picture mismatch: got %q, want %q", u.Pictures[1], newPic)
+	}
+}
+
+func TestPromoteFromAuditExceedsLimit(t *testing.T) {
+	audit := &mockAuditRepo{}
+	users := &mockUserRepo{
+		users: []*domain.User{
+			{
+				Name:       "alice",
+				Embeddings: []domain.FaceEmbedding{{1, 1, 1}, {2, 2, 2}, {3, 3, 3}},
+				Pictures:   []string{"p1", "p2", "p3"},
+				UpdatedAt:  time.Now().Add(-time.Hour),
+			},
+		},
+	}
+	proc := &mockProcessor{}
+	svc := New(users, audit, proc, 0.45)
+
+	now := time.Now()
+	auditTime := now.Format(time.RFC3339)
+	newEmbedding := domain.FaceEmbedding{4, 4, 4}
+	newPic := "base64-new-pic"
+
+	audit.Append([]domain.AuditEntry{{
+		Time:       now,
+		Endpoint:   "stream-check",
+		Name:       "",
+		Similarity: 0.1,
+		Matched:    false,
+		Status:     domain.AuditStatusNotMatched,
+		FaceImage:  newPic,
+		Embedding:  newEmbedding,
+	}})
+
+	err := svc.PromoteFromAudit(auditTime, "alice")
+	if err == nil {
+		t.Error("expected error due to max pictures limit, got nil")
+	} else if !strings.Contains(err.Error(), "maximum 3 pictures per user") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }

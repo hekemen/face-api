@@ -1,8 +1,25 @@
+# VCS and local tooling
 .git
+node_modules/
+.playwright-mcp/
+test-results/
+
+# Docs and test tooling (not needed for the image)
+docs/
+test/
+
+# Local artifacts
+.env
 *.tmp
+*.tar
 *.jpg
 *.png
 *.test
+*.db
 faces.db
-.env
+*.o
+*.so
+/face-api
+server.log
+manifests.yaml
 lib/

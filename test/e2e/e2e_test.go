@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -484,7 +485,7 @@ func TestAuditEndpoint_E2E(t *testing.T) {
 			Similarity float32 `json:"similarity"`
 			Matched    bool    `json:"matched"`
 			DurationMs int64   `json:"duration_ms"`
-			FaceImage  string  `json:"face_image"`
+			HasFace    bool    `json:"has_face"`
 		} `json:"entries"`
 	}
 	if err := json.NewDecoder(auditResp.Body).Decode(&out); err != nil {
@@ -513,11 +514,41 @@ func TestAuditEndpoint_E2E(t *testing.T) {
 		t.Errorf("expected a recognize audit entry in: %+v", out.Entries)
 	}
 
-	// Check that each entry with a matched face has a non-empty face_image
+	// Matched entries must report has_face; the face image itself is
+	// lazy-loaded via /api/audit/face?id=<timestamp>, not inlined in /api/audit.
+	var matchedTime string
 	for _, entry := range out.Entries {
-		if entry.Matched && entry.FaceImage == "" {
-			t.Errorf("matched audit entry for %q has empty face_image", entry.Name)
+		if entry.Matched {
+			if !entry.HasFace {
+				t.Errorf("matched audit entry for %q has has_face=false", entry.Name)
+			}
+			if matchedTime == "" {
+				matchedTime = entry.Time
+			}
 		}
+	}
+	if matchedTime == "" {
+		t.Fatalf("expected at least one matched audit entry, got: %+v", out.Entries)
+	}
+
+	// Verify the lazy face-image endpoint returns a non-empty image.
+	faceResp, err := http.Get(baseURL + "/api/audit/face?id=" + url.QueryEscape(matchedTime))
+	if err != nil {
+		t.Fatalf("GET /api/audit/face: %v", err)
+	}
+	defer faceResp.Body.Close()
+	if faceResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(faceResp.Body)
+		t.Fatalf("GET /api/audit/face: expected 200, got %d: %s", faceResp.StatusCode, body)
+	}
+	var faceOut struct {
+		FaceImage string `json:"face_image"`
+	}
+	if err := json.NewDecoder(faceResp.Body).Decode(&faceOut); err != nil {
+		t.Fatalf("failed to decode /api/audit/face response: %v", err)
+	}
+	if faceOut.FaceImage == "" {
+		t.Errorf("/api/audit/face returned empty face_image for %q", matchedTime)
 	}
 
 	parsedTimes := make([]time.Time, len(out.Entries))
@@ -686,4 +717,160 @@ func TestAuditUnmatched_E2E(t *testing.T) {
 	}
 	t.Logf("audit-unmatched returned %d entries", unmatchedOut.Count)
 	t.Log("=== PASS: /api/audit-unmatched returns valid response ===")
+}
+
+func TestRecognizeSummaryEndpoint_E2E(t *testing.T) {
+	if testContainer == nil {
+		t.Skip("no container available")
+	}
+	t.Log("using shared container at", baseURL)
+
+	// Enroll a user so we have audit data.
+	enrollBuf, enrollCT := multipartBodyWithName("summary-test", "image", "test_hopkins_1.jpg")
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/enroll", enrollBuf)
+	req.Header.Set("Content-Type", enrollCT)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	resp.Body.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	// Recognize to produce audit entries.
+	recognizeBuf, recognizeCT := multipartBody("image", "test_hopkins_2.jpg")
+	req, _ = http.NewRequest(http.MethodPost, baseURL+"/recognize", recognizeBuf)
+	req.Header.Set("Content-Type", recognizeCT)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("recognize: %v", err)
+	}
+	resp.Body.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	// Call /api/audit/recognize-summary.
+	resp, err = http.Get(baseURL + "/api/audit/recognize-summary")
+	if err != nil {
+		t.Fatalf("recognize-summary request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var summary map[string]interface{}
+	if err := json.Unmarshal(body, &summary); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if summary["total_recognize"] == nil {
+		t.Error("missing total_recognize field")
+	}
+	if summary["total_matched"] == nil {
+		t.Error("missing total_matched field")
+	}
+	if summary["total_not_matched"] == nil {
+		t.Error("missing total_not_matched field")
+	}
+	if summary["total_recognize"].(float64) < 1 {
+		t.Errorf("expected total_recognize >= 1, got %v", summary["total_recognize"])
+	}
+	t.Log("recognize-summary:", body)
+	t.Log("=== PASS: /api/audit/recognize-summary returns valid response ===")
+}
+
+func TestRecognizeListEndpoint_E2E(t *testing.T) {
+	if testContainer == nil {
+		t.Skip("no container available")
+	}
+	t.Log("using shared container at", baseURL)
+
+	// Enroll two users.
+	for _, name := range []string{"list-test-alice", "list-test-bob"} {
+		enrollBuf, enrollCT := multipartBodyWithName(name, "image", "test_hopkins_1.jpg")
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/enroll", enrollBuf)
+		req.Header.Set("Content-Type", enrollCT)
+		resp, _ := http.DefaultClient.Do(req)
+		resp.Body.Close()
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// Recognize twice.
+	for _, img := range []string{"test_hopkins_1.jpg", "test_hopkins_2.jpg"} {
+		recognizeBuf, recognizeCT := multipartBody("image", img)
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/recognize", recognizeBuf)
+		req.Header.Set("Content-Type", recognizeCT)
+		resp, _ := http.DefaultClient.Do(req)
+		resp.Body.Close()
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// List all recognize entries.
+	resp, err := http.Get(baseURL + "/api/audit/recognize-list")
+	if err != nil {
+		t.Fatalf("recognize-list request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var listResp map[string]interface{}
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &listResp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	t.Log("recognize-list:", string(body))
+
+	if listResp["total_count"] == nil {
+		t.Error("missing total_count field")
+	}
+	if listResp["page"] == nil {
+		t.Error("missing page field")
+	}
+	if listResp["per_page"] == nil {
+		t.Error("missing per_page field")
+	}
+	if listResp["total_pages"] == nil {
+		t.Error("missing total_pages field")
+	}
+
+	entries, ok := listResp["entries"].([]interface{})
+	if !ok {
+		t.Fatalf("entries is not an array")
+	}
+	if len(entries) == 0 {
+		t.Error("expected at least 1 entry")
+	}
+
+	// Verify endpoint field is NOT present in entries.
+	for i, raw := range entries {
+		entry, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Errorf("entry[%d] is not an object", i)
+			continue
+		}
+		if _, has := entry["endpoint"]; has {
+			t.Errorf("entry[%d] unexpectedly contains 'endpoint' field", i)
+		}
+		if _, has := entry["name"]; !has {
+			t.Errorf("entry[%d] missing 'name' field", i)
+		}
+		if _, has := entry["similarity"]; !has {
+			t.Errorf("entry[%d] missing 'similarity' field", i)
+		}
+	}
+
+	// Test user filter.
+	filteredResp, err := http.Get(baseURL + "/api/audit/recognize-list?user=alice&per_page=100")
+	if err != nil {
+		t.Fatalf("recognize-list user filter: %v", err)
+	}
+	defer filteredResp.Body.Close()
+	filteredBody, _ := io.ReadAll(filteredResp.Body)
+	var filteredList map[string]interface{}
+	if err := json.Unmarshal(filteredBody, &filteredList); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	t.Log("recognize-list filtered:", string(filteredBody))
+
+	t.Log("=== PASS: /api/audit/recognize-list returns valid response ===")
 }

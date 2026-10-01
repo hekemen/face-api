@@ -299,17 +299,8 @@ ssh -l pi pi.home.arpa
 - No TLS/cert-manager currently installed on the cluster — HTTP only. Add a cert issuer + `ingress.tls` if HTTPS is needed.
 
 ### K3s Kubeconfig Access from this Machine
-The API server cert is only valid for `raspberrypi`/`localhost`, so `~/.kube/config.pi` (which points at `pi.home.arpa:6443`) fails TLS verification. Either:
-1. SSH-tunnel and rewrite the server address (used for `helm upgrade`):
-   ```bash
-   ssh -f -N -L 16443:127.0.0.1:6443 pi@pi.home.arpa
-   sed 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' /etc/rancher/k3s/k3s.yaml > /tmp/k3s-tunnel.yaml
-   KUBECONFIG=/tmp/k3s-tunnel.yaml helm upgrade face-api deploy/helm/face-api \
-     --namespace face-api \
-     --values deploy/helm/face-api/values.yaml \
-     --values deploy/helm/face-api/values.pi.yaml
-   ```
-2. Or run `kubectl`/`helm` on the Pi itself via SSH with the chart copied over.
+The API server cert is only valid for `raspberrypi`/`localhost`, so `~/.kube/config.pi` (which points at `pi.home.arpa:6443`) fails TLS verification. To use `kubectl` or `helm` from this machine without an SSH tunnel, use the `--insecure-skip-tls-verify` flag.
+
 
 ### Known Issues
 - **Wrong-arch content in arm64 images (`exec format error`, or silent x86-64 binaries)**: If the Dockerfile `ARG TARGETARCH` has a plain default (`ARG TARGETARCH=amd64`), that default **shadows** buildx's per-platform `TARGETARCH`, so every `--platform linux/arm64` leg actually builds amd64 content — the Go binary AND `libonnxruntime.so` come out x86-64, and the Pi pod fails with `exec ./face-api: exec format error`. Also, `TARGETARCH` (a global/`FROM`-level ARG) is NOT visible to shell commands inside a stage unless redeclared. Fix (current Dockerfile): declare bare `ARG TARGETARCH` and use `FROM --platform=linux/${TARGETARCH:-amd64}` so plain `docker build` (testcontainers e2e, no `--platform`) still resolves while buildx overrides the value per-arch. Verify the pushed arm64 manifest with `docker buildx imagetools inspect <repo> --raw` + inspecting the arm64 sub-manifest's `/app/face-api` and `/usr/local/lib/libonnxruntime.so.1` (`file` must say "ARM aarch64"). Also ensure QEMU is registered (`docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`) and `docker buildx ls` lists `linux/arm64`; if a `docker-container` builder was created before QEMU existed, **recreate it** (`docker buildx rm` + `docker buildx create`) or it may reuse poisoned arm64 layers.

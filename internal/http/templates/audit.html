@@ -6,12 +6,6 @@
   <select id="filterUser" style="padding:0.4rem 0.6rem;min-width:140px;">
     <option value="">All users</option>
   </select>
-  <select id="filterEndpoint" style="padding:0.4rem 0.6rem;">
-    <option value="">All endpoints</option>
-    <option value="enroll">enroll</option>
-    <option value="recognize">recognize</option>
-    <option value="stream-check">stream-check</option>
-  </select>
   <select id="filterStatus" style="padding:0.4rem 0.6rem;">
     <option value="">All statuses</option>
     <option value="matched">Matched</option>
@@ -21,13 +15,35 @@
   <button id="clearFilters" style="padding:0.4rem 0.8rem;cursor:pointer;">Clear</button>
 </div>
 
-<!-- Promote bar: shown when an entry is selected -->
-<div id="promoteBar" style="display:none;align-items:center;gap:0.5rem;padding:0.6rem 0.8rem;margin-bottom:0.75rem;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:4px;">
-  <img id="promoteThumb" src="" class="face-thumb" style="width:48px;height:48px;flex-shrink:0;" />
-  <input type="text" id="promoteName" placeholder="Enter name…" style="flex:1;padding:0.4rem;font-size:0.9rem;" />
-  <button id="promoteBtn" style="padding:0.4rem 0.8rem;cursor:pointer;">Promote</button>
-  <button id="deselectBtn" style="padding:0.4rem 0.6rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);">✕</button>
-  <span id="promoteStatus" style="font-size:0.85rem;"></span>
+<!-- Modal backdrop -->
+<div id="modalBackdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;" onclick="closeModal()"></div>
+
+<!-- Face image modal -->
+<div id="faceModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1001;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+    <strong id="faceModalTitle">Face Image</strong>
+    <button onclick="closeFaceModal()" style="padding:0.2rem 0.5rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">✕</button>
+  </div>
+  <img id="faceModalImage" src="" style="width:100%;border-radius:4px;" onerror="this.src='';this.alt='Failed to load image';" />
+  <p id="faceModalFallback" style="display:none;color:var(--pico-muted-color);font-size:0.85rem;">No face image available for this entry.</p>
+</div>
+
+<!-- Promote modal -->
+<div id="promoteModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1002;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1.25rem;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+    <strong>Enroll / Update User</strong>
+    <button id="promoteModalClose" onclick="closePromoteModal()" style="padding:0.2rem 0.5rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">✕</button>
+  </div>
+  <img id="promoteThumb" src="" class="face-thumb" style="width:80px;height:80px;flex-shrink:0;display:block;margin-bottom:0.75rem;border-radius:4px;" />
+  <select id="promoteUserSelect" style="width:100%;padding:0.5rem;font-size:0.9rem;margin-bottom:0.5rem;">
+    <option value="new">-- New User --</option>
+  </select>
+  <input type="text" id="promoteName" placeholder="Enter name..." style="width:100%;padding:0.5rem;font-size:0.9rem;display:none;margin-bottom:0.75rem;" />
+  <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+    <button id="promoteCancelBtn" onclick="closePromoteModal()" style="padding:0.5rem 1rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">Cancel</button>
+    <button id="promoteBtn" style="padding:0.5rem 1rem;cursor:pointer;">Enroll/Update</button>
+  </div>
+  <span id="promoteStatus" style="display:block;margin-top:0.5rem;font-size:0.85rem;"></span>
 </div>
 
 <p id="auditInfo">Loading...</p>
@@ -39,14 +55,21 @@
 <script>
 (function() {
   'use strict';
-  var state = { page: 1, perPage: 20, user: '', endpoint: '', status: '' };
+  var state = { page: 1, perPage: 20, user: '', status: '' };
   var selectedEntry = null;
-  var usersLoaded = false;
+  var filterNames = [];
+
+  // Error handler for the entire script
+  window.addEventListener('error', function(e) {
+    var el = document.getElementById('auditInfo');
+    if (el) {
+      el.textContent = 'JS Error: ' + e.message + ' at ' + e.filename + ':' + e.lineno;
+    }
+  });
 
   function buildURL() {
     var u = '../api/audit?page=' + state.page + '&per_page=' + state.perPage;
     if (state.user) u += '&name=' + encodeURIComponent(state.user);
-    if (state.endpoint) u += '&endpoint=' + encodeURIComponent(state.endpoint);
     if (state.status) u += '&status=' + encodeURIComponent(state.status);
     return u;
   }
@@ -60,10 +83,40 @@
     }
   }
 
+  // Load face image and open modal on click.
+  function loadAndOpenFaceModal(timestamp, imgEl) {
+    // Already loaded? Just open modal.
+    if (imgEl.dataset.loaded === '1') {
+      openFaceModal(timestamp);
+      return;
+    }
+    imgEl.dataset.loaded = '1';
+    fetch('../api/audit/face?id=' + encodeURIComponent(timestamp))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.face_image) {
+          imgEl.src = 'data:image/jpeg;base64,' + data.face_image;
+          // Open modal once image is loaded
+          openFaceModal(timestamp);
+        } else {
+          imgEl.style.display = 'none';
+        }
+      })
+      .catch(function() {
+        imgEl.style.display = 'none';
+      });
+  }
+
   function renderEntry(entry) {
-    var img = entry.face_image
-      ? '<img src="data:image/jpeg;base64,' + entry.face_image + '" class="face-thumb entry-thumb" data-id="' + entry.time + '">'
-      : '<div class="face-thumb entry-thumb" data-id="' + entry.time + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.7rem;">—</div>';
+    var thumbId = 'thumb-' + entry.time.replace(/[:.]/g, '-');
+    var img;
+    if (entry.has_face) {
+      // Has a face image — use actual <img> element for display + clickable
+      img = '<img class="face-thumb entry-thumb" id="' + thumbId + '" data-id="' + entry.time + '" src="" alt="face" style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;flex-shrink:0;background:var(--pico-card-background-color);" title="Click to view face image" />';
+    } else {
+      // No face detected — clickable link to reveal original frame in popup
+      img = '<button class="face-thumb no-face-link" id="' + thumbId + '" data-id="' + entry.time + '" style="display:flex;align-items:center;justify-content:center;background:var(--pico-card-background-color);color:var(--pico-muted-color);font-size:0.65rem;width:48px;height:48px;border-radius:6px;flex-shrink:0;cursor:pointer;border:1px dashed var(--pico-muted-border-color);transition:opacity 0.15s;" title="Click to view original frame">View<br>frame</button>';
+    }
     var name = entry.name || '<em style="color:var(--pico-muted-color);">—</em>';
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
     var selectedClass = (selectedEntry && selectedEntry.time === entry.time) ? ' selected-entry' : '';
@@ -80,54 +133,159 @@
     '</div>';
   }
 
-  function selectEntry(entry) {
-    selectedEntry = entry;
-    var bar = document.getElementById('promoteBar');
-    bar.style.display = 'flex';
-    document.getElementById('promoteThumb').src = 'data:image/jpeg;base64,' + (entry.face_image || '');
-    document.getElementById('promoteName').value = '';
-    document.getElementById('promoteStatus').textContent = '';
-    document.getElementById('promoteBtn').textContent = 'Promote';
-    document.getElementById('promoteBtn').disabled = false;
-    document.getElementById('promoteName').focus();
-    render();
+  // --- Modal helpers ---
+  window.closeModal = function() {
+    closeFaceModal();
+    closePromoteModal();
+  };
+
+  function openFaceModal(timestamp) {
+    var backdrop = document.getElementById('modalBackdrop');
+    var modal = document.getElementById('faceModal');
+    var img = document.getElementById('faceModalImage');
+    var fallback = document.getElementById('faceModalFallback');
+    img.src = '';
+    img.style.display = 'block';
+    fallback.style.display = 'none';
+    document.getElementById('faceModalTitle').textContent = 'Face — ' + timestamp;
+    // Load the image
+    fetch('../api/audit/face?id=' + encodeURIComponent(timestamp))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.face_image) {
+          img.src = 'data:image/jpeg;base64,' + data.face_image;
+        } else {
+          img.style.display = 'none';
+          fallback.style.display = 'block';
+        }
+      })
+      .catch(function() {
+        img.style.display = 'none';
+        fallback.style.display = 'block';
+      });
+    backdrop.style.display = 'block';
+    modal.style.display = 'block';
   }
 
-  function deselectEntry() {
+  window.closeFaceModal = function() {
+    document.getElementById('modalBackdrop').style.display = 'none';
+    document.getElementById('faceModal').style.display = 'none';
+    document.getElementById('faceModalImage').src = '';
+  };
+
+  function openPromoteModal(entry) {
+    selectedEntry = entry;
+    var backdrop = document.getElementById('modalBackdrop');
+    var modal = document.getElementById('promoteModal');
+    document.getElementById('promoteThumb').src = '';
+    document.getElementById('promoteName').value = '';
+    document.getElementById('promoteName').style.display = 'none';
+    document.getElementById('promoteUserSelect').value = 'new';
+    document.getElementById('promoteUserSelect').style.display = 'block';
+    document.getElementById('promoteStatus').textContent = '';
+    document.getElementById('promoteBtn').textContent = 'Enroll/Update';
+    document.getElementById('promoteBtn').disabled = false;
+    backdrop.style.display = 'block';
+    modal.style.display = 'block';
+    document.getElementById('promoteUserSelect').focus();
+    // Load the face image
+    loadAndOpenFaceModal(entry.time, document.getElementById('promoteThumb'));
+  }
+
+  window.closePromoteModal = function() {
     selectedEntry = null;
-    document.getElementById('promoteBar').style.display = 'none';
+    document.getElementById('modalBackdrop').style.display = 'none';
+    document.getElementById('promoteModal').style.display = 'none';
+    document.getElementById('promoteThumb').src = '';
     render();
+  };
+
+  function selectEntry(entry) {
+    if (selectedEntry && selectedEntry.time === entry.time) {
+      // Deselect if already selected
+      selectedEntry = null;
+      render();
+      return;
+    }
+    openPromoteModal(entry);
+  }
+
+  function populateDropdowns(names) {
+    var sel = document.getElementById('filterUser');
+    var promoteSel = document.getElementById('promoteUserSelect');
+
+    var currentFilter = sel.value;
+    var currentPromote = promoteSel.value;
+
+    sel.innerHTML = '<option value="">All users</option>';
+    names.forEach(function(n) {
+      var opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = n;
+      sel.appendChild(opt);
+    });
+
+    promoteSel.innerHTML = '<option value="new">-- New User --</option>';
+    names.forEach(function(n) {
+      var opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = n;
+      promoteSel.appendChild(opt);
+    });
+
+    if (currentFilter && Array.from(sel.options).some(function(o) { return o.value === currentFilter; })) {
+      sel.value = currentFilter;
+    }
+    if (currentPromote && currentPromote !== 'new' && Array.from(promoteSel.options).some(function(o) { return o.value === currentPromote; })) {
+      promoteSel.value = currentPromote;
+    }
   }
 
   function doPromote() {
     if (!selectedEntry) return;
-    var name = document.getElementById('promoteName').value.trim();
-    if (!name) {
-      document.getElementById('promoteName').focus();
-      return;
+
+    var promoteSel = document.getElementById('promoteUserSelect');
+    var promoteNameInput = document.getElementById('promoteName');
+    var name = '';
+
+    if (promoteSel.value === 'new') {
+      name = promoteNameInput.value.trim();
+      if (!name) {
+        promoteNameInput.focus();
+        return;
+      }
+    } else {
+      name = promoteSel.value;
     }
+
     var auditTime = selectedEntry.time;
     var btn = document.getElementById('promoteBtn');
     btn.disabled = true;
-    btn.textContent = 'Promoting…';
+    btn.textContent = 'Enrolling…';
     document.getElementById('promoteStatus').textContent = '';
 
-    fetch('../audit/promote?id=' + encodeURIComponent(auditTime) + '&name=' + encodeURIComponent(name), {
+    fetch('../audit/promote?id=' + encodeURIComponent(auditTime), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name })
     })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok) {
+        return r.json().then(function(data) { throw new Error(data.error || 'Request failed'); });
+      }
+      return r.json();
+    })
     .then(function(data) {
-      document.getElementById('promoteStatus').innerHTML = '<span style="color:green;">✓ Promoted!</span>';
+      document.getElementById('promoteStatus').innerHTML = '<span style="color:green;">✓ Success!</span>';
       setTimeout(function() {
-        deselectEntry();
+        closePromoteModal();
         render();
       }, 800);
     })
     .catch(function(err) {
       document.getElementById('promoteStatus').innerHTML = '<span style="color:red;">Error: ' + err + '</span>';
       btn.disabled = false;
-      btn.textContent = 'Promote';
+      btn.textContent = 'Enroll/Update';
     });
   }
 
@@ -135,6 +293,11 @@
     fetch(buildURL())
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        if (data.users && data.users.length > 0) {
+          filterNames = data.users;
+          populateDropdowns(data.users);
+        }
+
         document.getElementById('auditInfo').textContent =
           'Showing ' + data.entries.length + ' of ' + data.total_count + ' entries (page ' + data.page + '/' + data.total_pages + ')';
 
@@ -145,17 +308,16 @@
           content.innerHTML = data.entries.map(renderEntry).join('');
         }
 
-        // Bind click handlers for entry thumbnails
-        content.querySelectorAll('.entry-thumb').forEach(function(img) {
-          img.addEventListener('click', function() {
+        // Bind click handlers for entry thumbnails and no-face links (opens face modal)
+        content.querySelectorAll('.entry-thumb, .no-face-link').forEach(function(thumb) {
+          thumb.addEventListener('click', function() {
             var id = this.getAttribute('data-id');
             var entry = data.entries.find(function(e) { return e.time === id; });
-            if (entry) {
-              if (selectedEntry && selectedEntry.time === id) {
-                deselectEntry();
-              } else {
-                selectEntry(entry);
-              }
+            if (entry && entry.has_face) {
+              loadAndOpenFaceModal(id, this);
+            } else if (entry && !entry.has_face) {
+              // No-face entry: open modal directly to load the original frame
+              openFaceModal(id);
             }
           });
         });
@@ -187,58 +349,48 @@
       });
   }
 
-  // Load users into filter dropdown
-  function loadUsers() {
-    if (usersLoaded) return;
-    usersLoaded = true;
-    fetch('../api/audit?per_page=1')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var names = new Set();
-        data.entries.forEach(function(e) { if (e.name) names.add(e.name); });
-        var sel = document.getElementById('filterUser');
-        Array.from(names).sort().forEach(function(n) {
-          var opt = document.createElement('option');
-          opt.value = n;
-          opt.textContent = n;
-          sel.appendChild(opt);
-        });
-      })
-      .catch(function() {});
-  }
-
   // Bind filters
   document.getElementById('filterUser').addEventListener('change', function() {
     state.user = this.value; state.page = 1; render();
-  });
-  document.getElementById('filterEndpoint').addEventListener('change', function() {
-    state.endpoint = this.value; state.page = 1; render();
   });
   document.getElementById('filterStatus').addEventListener('change', function() {
     state.status = this.value; state.page = 1; render();
   });
   document.getElementById('clearFilters').addEventListener('click', function() {
-    state = { page: 1, perPage: 20, user: '', endpoint: '', status: '' };
+    state = { page: 1, perPage: 20, user: '', status: '' };
     document.getElementById('filterUser').value = '';
-    document.getElementById('filterEndpoint').value = '';
     document.getElementById('filterStatus').value = '';
     render();
   });
 
   // Promote bar events
   document.getElementById('promoteBtn').addEventListener('click', doPromote);
-  document.getElementById('deselectBtn').addEventListener('click', deselectEntry);
   document.getElementById('promoteName').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') doPromote();
   });
 
-  // Escape key deselects
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && selectedEntry) deselectEntry();
+  // Toggle name input visibility
+  document.getElementById('promoteUserSelect').addEventListener('change', function() {
+    var promoteNameInput = document.getElementById('promoteName');
+    if (this.value === 'new') {
+      promoteNameInput.style.display = 'block';
+      promoteNameInput.focus();
+    } else {
+      promoteNameInput.style.display = 'none';
+    }
   });
 
-  render();
-  loadUsers();
+  // Escape key closes modals
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  try {
+    render();
+  } catch(e) {
+    var el = document.getElementById('auditInfo');
+    if (el) el.textContent = 'Render error: ' + e.message;
+  }
 })();
 </script>
 <style>
