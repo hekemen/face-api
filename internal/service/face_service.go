@@ -420,7 +420,19 @@ func (s *FaceServiceImpl) RecentAudit(n int) ([]domain.AuditEntry, error) {
 }
 
 func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, []string, error) {
-	return s.audit.ListPaginated(opts)
+	entries, total, users, err := s.audit.ListPaginated(opts)
+	if err != nil {
+		return nil, 0, users, err
+	}
+	for i := range entries {
+		if entries[i].FaceImage == "" {
+			continue
+		}
+		if thumb, err := thumbnailFromBase64(entries[i].FaceImage, 96); err == nil {
+			entries[i].FaceImage = thumb
+		}
+	}
+	return entries, total, users, nil
 }
 
 func (s *FaceServiceImpl) ComputeStats() (domain.Stats, error) {
@@ -432,7 +444,19 @@ func (s *FaceServiceImpl) GetAuditFace(timestamp string) (string, error) {
 }
 
 func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {
-	return s.audit.ListUnmatched(n)
+	entries, err := s.audit.ListUnmatched(n)
+	if err != nil {
+		return nil, err
+	}
+	for i := range entries {
+		if entries[i].FaceImage == "" {
+			continue
+		}
+		if thumb, err := thumbnailFromBase64(entries[i].FaceImage, 96); err == nil {
+			entries[i].FaceImage = thumb
+		}
+	}
+	return entries, nil
 }
 
 func (s *FaceServiceImpl) ListRecognizeEntries(opts domain.ListRecognizeEntriesOpts) ([]domain.AuditEntry, int, error) {
