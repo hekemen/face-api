@@ -23,28 +23,25 @@ const authCookieDuration = 24 * time.Hour
 type authMiddleware struct {
 	token    string
 	enableUI bool
+	basePath string
 	handler  http.Handler
 }
 
 // NewAuthMiddleware creates middleware that requires X-Token for API routes.
 // When token is empty, auth is skipped (development mode).
-func NewAuthMiddleware(handler http.Handler, token string, enableUI bool) *authMiddleware {
+// basePath is the URL prefix the app is served under (e.g. "/face" when an
+// ingress strips the prefix before forwarding). It is used for the login
+// redirect target and the UI page redirect; an empty basePath means the app
+// is served at the root. The prefix cannot be derived from the request path
+// because a stripping ingress (e.g. Traefik stripPrefix) removes it before
+// the request reaches the app.
+func NewAuthMiddleware(handler http.Handler, token string, enableUI bool, basePath string) *authMiddleware {
 	return &authMiddleware{
 		token:    token,
 		enableUI: enableUI,
+		basePath: basePath,
 		handler:  handler,
 	}
-}
-
-// uiPrefix returns the URL prefix for UI paths so redirects and cookie
-// paths are correct when the app sits behind an ingress that strips a
-// prefix (e.g. Traefik stripping /face).
-func uiPrefix(r *http.Request) string {
-	p := r.URL.Path
-	if strings.HasPrefix(p, "/face/") || p == "/face" {
-		return "/face"
-	}
-	return ""
 }
 
 // ServeHTTP enforces authentication.
@@ -57,6 +54,13 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// UI auth endpoints are always allowed (login form, login POST, logout).
+	// Must come before the general /ui/ cookie check.
+	if m.enableUI && (path == "/ui/login" || path == "/ui/auth" || path == "/ui/logout") {
+		m.handler.ServeHTTP(w, r)
+		return
+	}
+
 	// UI routes: verify httpOnly cookie.
 	if m.enableUI && strings.HasPrefix(path, "/ui/") {
 		if !m.checkCookieAuth(r) {
@@ -64,16 +68,9 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 				return
 			}
-			prefix := uiPrefix(r)
-			http.Redirect(w, r, prefix+"/ui/login", http.StatusFound)
+			http.Redirect(w, r, m.basePath+"/ui/login", http.StatusFound)
 			return
 		}
-		m.handler.ServeHTTP(w, r)
-		return
-	}
-
-	// UI auth endpoints are always allowed (login form, login POST, logout).
-	if m.enableUI && (path == "/ui/login" || path == "/ui/auth" || path == "/ui/logout") {
 		m.handler.ServeHTTP(w, r)
 		return
 	}
@@ -135,11 +132,13 @@ func isXHR(r *http.Request) bool {
 type AuthUIHandler struct {
 	token    string
 	enableUI bool
+	basePath string
 }
 
-// NewAuthUIHandler creates the auth UI handler.
-func NewAuthUIHandler(token string, enableUI bool) *AuthUIHandler {
-	return &AuthUIHandler{token: token, enableUI: enableUI}
+// NewAuthUIHandler creates the auth UI handler. basePath is the URL prefix
+// the app is served under (e.g. "/face"); see NewAuthMiddleware.
+func NewAuthUIHandler(token string, enableUI bool, basePath string) *AuthUIHandler {
+	return &AuthUIHandler{token: token, enableUI: enableUI, basePath: basePath}
 }
 
 // RegisterAuthHandlers attaches /ui/login, /ui/auth, /ui/logout to the mux.
@@ -163,29 +162,27 @@ func (h *AuthUIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prefix := uiPrefix(r)
 	cookie := &http.Cookie{
 		Name:     authCookieName,
 		Value:    h.token,
-		Path:     prefix + "/ui",
+		Path:     h.basePath + "/ui",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(authCookieDuration.Seconds()),
 	}
 	http.SetCookie(w, cookie)
-	http.Redirect(w, r, prefix+"/ui/", http.StatusFound)
+	http.Redirect(w, r, h.basePath+"/ui/", http.StatusFound)
 }
 
 func (h *AuthUIHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	prefix := uiPrefix(r)
 	cookie := &http.Cookie{
 		Name:   authCookieName,
 		Value:  "",
-		Path:   prefix + "/ui",
+		Path:   h.basePath + "/ui",
 		MaxAge: -1,
 	}
 	http.SetCookie(w, cookie)
-	http.Redirect(w, r, prefix+"/ui/login", http.StatusFound)
+	http.Redirect(w, r, h.basePath+"/ui/login", http.StatusFound)
 }
 
 // renderLoginForm renders the login page.

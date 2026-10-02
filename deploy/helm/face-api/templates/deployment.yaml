@@ -39,6 +39,13 @@ spec:
             - name: FACES_DB_PATH
               value: /data/faces.db
             {{- end }}
+            {{- if and .Values.ingress.enabled .Values.ingress.stripPrefix }}
+            # The ingress strips this prefix before forwarding, so the app
+            # cannot detect it from the request path. The UI login/logout
+            # redirects and the auth cookie path use it.
+            - name: UI_BASE_PATH
+              value: {{ .Values.ingress.stripPrefix | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

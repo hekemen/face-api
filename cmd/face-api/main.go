@@ -96,6 +96,14 @@ func main() {
 		}
 	}
 
+	// UI base path (e.g. "/face" when an ingress strips the prefix before
+	// forwarding, like Traefik stripPrefix). Used for login/logout redirects
+	// and the auth cookie path. Empty = served at the root.
+	uiBasePath := strings.TrimRight(strings.TrimSpace(os.Getenv("UI_BASE_PATH")), "/")
+	if uiBasePath != "" && !strings.HasPrefix(uiBasePath, "/") {
+		uiBasePath = "/" + uiBasePath
+	}
+
 	// 3. Wire up the hexagonal architecture
 	faceAPI, err := di.NewFaceAPI(di.Config{
 		DB:             kvDB,
@@ -106,6 +114,7 @@ func main() {
 		RecSession:     recSess,
 		RTSPURL:        os.Getenv("RTSP_URL"),
 		EnableUI:       enableUI,
+		BasePath:       uiBasePath,
 		Threshold:      threshold,
 		AuthToken:      apiToken,
 		MaxUploadBytes: maxUploadBytes,

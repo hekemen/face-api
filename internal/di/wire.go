@@ -24,6 +24,7 @@ type Config struct {
 	RecSession     *ort.Session
 	RTSPURL        string
 	EnableUI       bool
+	BasePath       string
 	Threshold      float32
 	AuthToken      string
 	MaxUploadBytes int64
@@ -60,6 +61,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.RTSPURL,
 		rtspReader,
 		cfg.EnableUI,
+		cfg.BasePath,
 		cfg.AuthToken,
 		cfg.MaxUploadBytes,
 		cfg.Logger,
@@ -82,7 +84,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 
 	// Wrap with middleware: auth first (outer), size limit (inner).
 	var finalHandler http.Handler
-	finalHandler = fhttp.NewAuthMiddleware(mux, cfg.AuthToken, cfg.EnableUI)
+	finalHandler = fhttp.NewAuthMiddleware(mux, cfg.AuthToken, cfg.EnableUI, cfg.BasePath)
 	finalHandler = fhttp.NewMaxSizeMiddleware(finalHandler, cfg.MaxUploadBytes)
 
 	return &FaceAPI{
