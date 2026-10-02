@@ -88,10 +88,18 @@ func decodeImageFromRequest(r *http.Request, fieldName string) ([]byte, error) {
 }
 
 // writeJSON encodes a response as JSON and writes it with the given status code.
+// The body is buffered so Content-Length can be set, which prevents reverse
+// proxies (e.g. Traefik) from buffering a chunked response before forwarding.
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	buf, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	w.Write(buf)
 }
 
 // writeError writes a JSON error response.

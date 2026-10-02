@@ -3,6 +3,9 @@ package service
 import (
 	"encoding/base64"
 	"fmt"
+	"sync"
+
+	"h2hsecure.com/face/internal/domain"
 )
 
 // thumbnailFromBase64 decodes a base64-encoded image, resizes it so its
@@ -38,4 +41,23 @@ func thumbnailFromBase64(b64 string, maxDim int) (string, error) {
 	}
 	resized := bilinearResize(img, nw, nh)
 	return encodeFaceToBase64(resized)
+}
+
+// thumbnailsParallel replaces FaceImage with a maxDim thumbnail for every
+// entry that has one, generating them concurrently.
+func thumbnailsParallel(entries []domain.AuditEntry, maxDim int) {
+	var wg sync.WaitGroup
+	for i := range entries {
+		if entries[i].FaceImage == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if thumb, err := thumbnailFromBase64(entries[idx].FaceImage, maxDim); err == nil {
+				entries[idx].FaceImage = thumb
+			}
+		}(i)
+	}
+	wg.Wait()
 }

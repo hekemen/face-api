@@ -424,14 +424,7 @@ func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]d
 	if err != nil {
 		return nil, 0, users, err
 	}
-	for i := range entries {
-		if entries[i].FaceImage == "" {
-			continue
-		}
-		if thumb, err := thumbnailFromBase64(entries[i].FaceImage, 96); err == nil {
-			entries[i].FaceImage = thumb
-		}
-	}
+	thumbnailsParallel(entries, 96)
 	return entries, total, users, nil
 }
 
@@ -448,14 +441,7 @@ func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range entries {
-		if entries[i].FaceImage == "" {
-			continue
-		}
-		if thumb, err := thumbnailFromBase64(entries[i].FaceImage, 96); err == nil {
-			entries[i].FaceImage = thumb
-		}
-	}
+	thumbnailsParallel(entries, 96)
 	return entries, nil
 }
 
