@@ -56,8 +56,8 @@ func TestAuth_Login_WithBasePath(t *testing.T) {
 	if c == nil {
 		t.Fatal("expected auth cookie to be set")
 	}
-	if c.Path != "/face/ui" {
-		t.Errorf("cookie Path = %q, want %q", c.Path, "/face/ui")
+	if c.Path != "/face" {
+		t.Errorf("cookie Path = %q, want %q (whole app, so API routes receive it)", c.Path, "/face")
 	}
 	if !c.HttpOnly {
 		t.Error("cookie should be HttpOnly")
@@ -84,8 +84,8 @@ func TestAuth_Login_RootBehavior(t *testing.T) {
 	if c == nil {
 		t.Fatal("expected auth cookie to be set")
 	}
-	if c.Path != "/ui" {
-		t.Errorf("cookie Path = %q, want %q", c.Path, "/ui")
+	if c.Path != "/" {
+		t.Errorf("cookie Path = %q, want %q (root app)", c.Path, "/")
 	}
 }
 
@@ -181,8 +181,8 @@ func TestAuth_Logout_RewritesLocationAndClearsCookie(t *testing.T) {
 	if c.Value != "" {
 		t.Errorf("cleared cookie Value = %q, want empty", c.Value)
 	}
-	if c.Path != "/face/ui" {
-		t.Errorf("cleared cookie Path = %q, want %q", c.Path, "/face/ui")
+	if c.Path != "/face" {
+		t.Errorf("cleared cookie Path = %q, want %q (must match login path)", c.Path, "/face")
 	}
 }
 
@@ -204,5 +204,34 @@ func TestAuth_API_RequiresToken(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 with token, got %d", w.Code)
+	}
+}
+
+// TestAuth_API_AcceptsAuthCookie verifies that API routes also accept the UI
+// auth cookie, so in-page fetch() calls from the browser (audit list, stats,
+// promote) work after a UI login without needing the X-Token header.
+func TestAuth_API_AcceptsAuthCookie(t *testing.T) {
+	handler := buildAuthStack("/face")
+
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.AddCookie(&http.Cookie{Name: authCookieName, Value: testToken})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid auth cookie, got %d", w.Code)
+	}
+}
+
+// TestAuth_API_RejectsWrongCookie verifies that an auth cookie with the wrong
+// value is still rejected on API routes.
+func TestAuth_API_RejectsWrongCookie(t *testing.T) {
+	handler := buildAuthStack("/face")
+
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.AddCookie(&http.Cookie{Name: authCookieName, Value: "wrong-value"})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong cookie, got %d", w.Code)
 	}
 }

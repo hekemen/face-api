@@ -75,10 +75,13 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// API routes: check X-Token header.
+	// API routes: check X-Token header, or the UI auth cookie when the UI is
+	// enabled (browser in-page fetch() calls from /ui/ pages cannot send a
+	// custom header, so the same secret via the HttpOnly cookie is accepted).
 	if m.token != "" {
 		got := strings.TrimSpace(r.Header.Get("X-Token"))
-		if subtle.ConstantTimeCompare([]byte(got), []byte(m.token)) != 1 {
+		cookieOK := m.enableUI && m.checkCookieAuth(r)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(m.token)) != 1 && !cookieOK {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
@@ -162,10 +165,17 @@ func (h *AuthUIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The cookie path must cover the whole app (UI pages AND the API routes
+	// the UI fetches in-page, e.g. /api/audit), not just /ui — otherwise the
+	// browser never sends it for API paths and in-page fetch() calls 401.
+	cookiePath := h.basePath
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
 	cookie := &http.Cookie{
 		Name:     authCookieName,
 		Value:    h.token,
-		Path:     h.basePath + "/ui",
+		Path:     cookiePath,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(authCookieDuration.Seconds()),
@@ -175,10 +185,16 @@ func (h *AuthUIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthUIHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Clear at the same path the login set (whole app, not just /ui),
+	// otherwise the browser keeps the cookie.
+	cookiePath := h.basePath
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
 	cookie := &http.Cookie{
 		Name:   authCookieName,
 		Value:  "",
-		Path:   h.basePath + "/ui",
+		Path:   cookiePath,
 		MaxAge: -1,
 	}
 	http.SetCookie(w, cookie)

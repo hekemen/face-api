@@ -28,7 +28,7 @@
 <script>
 (function() {
   setInterval(function() {
-    fetch('/stats')
+    fetch('../stats')
       .then(function(resp) { return resp.json(); })
       .then(function(data) {
         var cards = document.querySelectorAll('.stat-card div:first-child');
