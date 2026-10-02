@@ -36,6 +36,17 @@ func NewAuthMiddleware(handler http.Handler, token string, enableUI bool) *authM
 	}
 }
 
+// uiPrefix returns the URL prefix for UI paths so redirects and cookie
+// paths are correct when the app sits behind an ingress that strips a
+// prefix (e.g. Traefik stripping /face).
+func uiPrefix(r *http.Request) string {
+	p := r.URL.Path
+	if strings.HasPrefix(p, "/face/") || p == "/face" {
+		return "/face"
+	}
+	return ""
+}
+
 // ServeHTTP enforces authentication.
 func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
@@ -53,7 +64,8 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 				return
 			}
-			http.Redirect(w, r, "/ui/login", http.StatusFound)
+			prefix := uiPrefix(r)
+			http.Redirect(w, r, prefix+"/ui/login", http.StatusFound)
 			return
 		}
 		m.handler.ServeHTTP(w, r)
@@ -151,27 +163,29 @@ func (h *AuthUIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prefix := uiPrefix(r)
 	cookie := &http.Cookie{
 		Name:     authCookieName,
 		Value:    h.token,
-		Path:     "/ui",
+		Path:     prefix + "/ui",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(authCookieDuration.Seconds()),
 	}
 	http.SetCookie(w, cookie)
-	http.Redirect(w, r, "/ui/", http.StatusFound)
+	http.Redirect(w, r, prefix+"/ui/", http.StatusFound)
 }
 
 func (h *AuthUIHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	prefix := uiPrefix(r)
 	cookie := &http.Cookie{
 		Name:   authCookieName,
 		Value:  "",
-		Path:   "/ui",
+		Path:   prefix + "/ui",
 		MaxAge: -1,
 	}
 	http.SetCookie(w, cookie)
-	http.Redirect(w, r, "/ui/login", http.StatusFound)
+	http.Redirect(w, r, prefix+"/ui/login", http.StatusFound)
 }
 
 // renderLoginForm renders the login page.
