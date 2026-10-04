@@ -289,3 +289,83 @@ func TestAuditRepositoryCountRecognizeEntries(t *testing.T) {
 		t.Errorf("expected 3 recognize-only (no no_face), got %d", count)
 	}
 }
+
+func TestAuditRepositorySetFaceThumb(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	repo := NewAuditRepository(db)
+
+	ts := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	// Two entries with the same timestamp but different face images —
+	// SetFaceThumb must disambiguate on face_image, not just time.
+	err := repo.Append([]domain.AuditEntry{
+		{Time: ts, Endpoint: "enroll", Name: "a", FaceImage: "img-A", Status: domain.AuditStatusMatched},
+		{Time: ts, Endpoint: "enroll", Name: "b", FaceImage: "img-B", Status: domain.AuditStatusMatched},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Set the thumb for entry A only.
+	if err := repo.SetFaceThumb(ts, "img-A", "thumb-A"); err != nil {
+		t.Fatalf("SetFaceThumb: %v", err)
+	}
+
+	entries, err := repo.Recent(10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+
+	var gotA, gotB *domain.AuditEntry
+	for i := range entries {
+		switch entries[i].Name {
+		case "a":
+			gotA = &entries[i]
+		case "b":
+			gotB = &entries[i]
+		}
+	}
+	if gotA == nil || gotB == nil {
+		t.Fatalf("entries a/b not found: %+v", entries)
+	}
+	if gotA.FaceThumb != "thumb-A" {
+		t.Errorf("entry a FaceThumb = %q, want %q", gotA.FaceThumb, "thumb-A")
+	}
+	if gotA.FaceImage != "img-A" {
+		t.Errorf("entry a FaceImage = %q, want %q (must be preserved)", gotA.FaceImage, "img-A")
+	}
+	if gotB.FaceThumb != "" {
+		t.Errorf("entry b FaceThumb = %q, want empty (untouched)", gotB.FaceThumb)
+	}
+
+	// Round-trip through ListPaginated.
+	page, _, _, err := repo.ListPaginated(domain.ListPaginatedOpts{Page: 1, PerPage: 10})
+	if err != nil {
+		t.Fatalf("ListPaginated: %v", err)
+	}
+	found := false
+	for _, e := range page {
+		if e.Name == "a" {
+			found = true
+			if e.FaceThumb != "thumb-A" {
+				t.Errorf("ListPaginated entry a FaceThumb = %q, want %q", e.FaceThumb, "thumb-A")
+			}
+		}
+	}
+	if !found {
+		t.Error("entry a not found in ListPaginated page")
+	}
+
+	// No match on face_image → error.
+	if err := repo.SetFaceThumb(ts, "img-C", "thumb-C"); err == nil {
+		t.Error("SetFaceThumb with unknown face_image: want error, got nil")
+	}
+	// No match on time → error.
+	other := ts.Add(time.Hour)
+	if err := repo.SetFaceThumb(other, "img-A", "thumb-X"); err == nil {
+		t.Error("SetFaceThumb with unknown time: want error, got nil")
+	}
+}

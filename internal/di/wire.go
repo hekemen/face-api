@@ -7,11 +7,11 @@ import (
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
+	"h2hsecure.com/face/internal/domain"
 	fhttp "h2hsecure.com/face/internal/http"
 	"h2hsecure.com/face/internal/repository"
 	"h2hsecure.com/face/internal/rtsp"
 	"h2hsecure.com/face/internal/service"
-	"h2hsecure.com/face/internal/domain"
 )
 
 // Config holds the configuration needed to wire the face API.

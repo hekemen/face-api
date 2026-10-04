@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -77,8 +78,16 @@ func (m *mockUserRepo) ListAll() ([]*domain.User, error) {
 	return m.users, nil
 }
 
+// thumbSetCall records a SetFaceThumb call on the mock.
+type thumbSetCall struct {
+	timestamp time.Time
+	faceImage string
+	thumb     string
+}
+
 type mockAuditRepo struct {
-	entries []domain.AuditEntry
+	entries   []domain.AuditEntry
+	thumbSets []thumbSetCall
 }
 
 func (m *mockAuditRepo) Append(entries []domain.AuditEntry) error {
@@ -105,7 +114,27 @@ func (m *mockAuditRepo) CountAll() (int, error) {
 }
 
 func (m *mockAuditRepo) ListUnmatched(n int) ([]domain.AuditEntry, error) {
-	return nil, nil
+	var out []domain.AuditEntry
+	for _, e := range m.entries {
+		if e.Status == domain.AuditStatusNotMatched {
+			out = append(out, e)
+		}
+	}
+	if n > 0 && len(out) > n {
+		out = out[:n]
+	}
+	return out, nil
+}
+
+func (m *mockAuditRepo) SetFaceThumb(timestamp time.Time, faceImage, thumb string) error {
+	m.thumbSets = append(m.thumbSets, thumbSetCall{timestamp: timestamp, faceImage: faceImage, thumb: thumb})
+	for i := range m.entries {
+		if m.entries[i].Time.Format(time.RFC3339) == timestamp.Format(time.RFC3339) && m.entries[i].FaceImage == faceImage {
+			m.entries[i].FaceThumb = thumb
+			return nil
+		}
+	}
+	return fmt.Errorf("no audit entry for time %s and face image", timestamp.Format(time.RFC3339))
 }
 
 func (m *mockAuditRepo) ComputeStats() (domain.Stats, error) {
@@ -517,5 +546,194 @@ func TestPromoteFromAuditExceedsLimit(t *testing.T) {
 		t.Error("expected error due to max pictures limit, got nil")
 	} else if !strings.Contains(err.Error(), "maximum 3 pictures per user") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// mustDecode decodes a base64 string, failing the test on error.
+func mustDecode(t *testing.T, b64 string) []byte {
+	t.Helper()
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("decode base64: %v", err)
+	}
+	return data
+}
+
+func TestEnroll_SetsFaceThumb(t *testing.T) {
+	// Large crop (over the threshold) gets a stored thumbnail.
+	large := makeNoiseJPEG(t, 200, 150)
+	audit := &mockAuditRepo{}
+	svc := New(&mockUserRepo{}, audit, &mockProcessor{crop: &domain.FaceCrop{Data: mustDecode(t, large), Embedding: []float32{1, 0, 0}}}, 0.45)
+	if err := svc.EnrollImage("alice", []byte("img")); err != nil {
+		t.Fatalf("EnrollImage: %v", err)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(audit.entries))
+	}
+	e := audit.entries[0]
+	if e.FaceImage != large {
+		t.Errorf("FaceImage len %d, want full-size %d", len(e.FaceImage), len(large))
+	}
+	if e.FaceThumb == "" {
+		t.Fatal("FaceThumb empty, want stored thumbnail for large image")
+	}
+	if len(e.FaceThumb) >= len(large) {
+		t.Errorf("FaceThumb len %d not smaller than FaceImage %d", len(e.FaceThumb), len(large))
+	}
+	if m := maxDimOf(t, e.FaceThumb); m > 96 {
+		t.Errorf("FaceThumb max dimension = %d, want <= 96", m)
+	}
+
+	// Small crop (under the threshold) gets no thumbnail.
+	small := makeTestJPEG(t, 112, 112)
+	audit2 := &mockAuditRepo{}
+	svc2 := New(&mockUserRepo{}, audit2, &mockProcessor{crop: &domain.FaceCrop{Data: mustDecode(t, small), Embedding: []float32{1, 0, 0}}}, 0.45)
+	if err := svc2.EnrollImage("bob", []byte("img")); err != nil {
+		t.Fatalf("EnrollImage: %v", err)
+	}
+	if audit2.entries[0].FaceThumb != "" {
+		t.Errorf("FaceThumb = %q, want empty for small image", audit2.entries[0].FaceThumb)
+	}
+}
+
+func TestRecognize_SetsFaceThumb(t *testing.T) {
+	large := makeNoiseJPEG(t, 200, 150)
+	audit := &mockAuditRepo{}
+	svc := New(&mockUserRepo{}, audit, &mockProcessor{crop: &domain.FaceCrop{Data: mustDecode(t, large), Embedding: []float32{1, 0, 0}}}, 0.45)
+	if _, err := svc.RecognizeImage([]byte("img")); err != nil {
+		t.Fatalf("RecognizeImage: %v", err)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(audit.entries))
+	}
+	e := audit.entries[0]
+	if e.FaceImage != large {
+		t.Errorf("FaceImage len %d, want full-size %d", len(e.FaceImage), len(large))
+	}
+	if e.FaceThumb == "" {
+		t.Fatal("FaceThumb empty, want stored thumbnail for large image")
+	}
+	if m := maxDimOf(t, e.FaceThumb); m > 96 {
+		t.Errorf("FaceThumb max dimension = %d, want <= 96", m)
+	}
+}
+
+func TestCheckStreamImage_SetsFaceThumb(t *testing.T) {
+	large := makeNoiseJPEG(t, 200, 150)
+	audit := &mockAuditRepo{}
+	users := &mockUserRepo{users: []*domain.User{{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0}}}}}
+	svc := New(users, audit, &mockProcessor{crop: &domain.FaceCrop{Data: mustDecode(t, large), Embedding: []float32{1, 0, 0}}}, 0.45)
+	res, err := svc.CheckStreamImage([]byte("img"))
+	if err != nil {
+		t.Fatalf("CheckStreamImage: %v", err)
+	}
+	if res.Status != "ok" {
+		t.Fatalf("status = %q, want ok", res.Status)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(audit.entries))
+	}
+	e := audit.entries[0]
+	if e.FaceImage != large {
+		t.Errorf("FaceImage len %d, want full-size %d", len(e.FaceImage), len(large))
+	}
+	if e.FaceThumb == "" {
+		t.Fatal("FaceThumb empty, want stored thumbnail for large image")
+	}
+}
+
+func TestListAuditPaginated_UsesStoredThumb(t *testing.T) {
+	big := strings.Repeat("A", 9000)
+	audit := &mockAuditRepo{entries: []domain.AuditEntry{
+		{Time: time.Now().Truncate(time.Second), Endpoint: "recognize", Name: "alice", Status: "matched", FaceImage: big, FaceThumb: "stored-thumb"},
+	}}
+	svc := New(&mockUserRepo{}, audit, &mockProcessor{}, 0.45)
+	entries, _, _, err := svc.ListAuditPaginated(domain.ListPaginatedOpts{Page: 1, PerPage: 20})
+	if err != nil {
+		t.Fatalf("ListAuditPaginated: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].FaceImage != "stored-thumb" {
+		t.Errorf("FaceImage not swapped to stored thumb (len %d)", len(entries[0].FaceImage))
+	}
+	if entries[0].FaceThumb != "" {
+		t.Errorf("FaceThumb = %q, want cleared after swap", entries[0].FaceThumb)
+	}
+}
+
+func TestListUnmatched_UsesStoredThumb(t *testing.T) {
+	big := strings.Repeat("A", 9000)
+	audit := &mockAuditRepo{entries: []domain.AuditEntry{
+		{Time: time.Now().Truncate(time.Second), Endpoint: "stream-check", Status: domain.AuditStatusNotMatched, FaceImage: big, FaceThumb: "stored-thumb"},
+	}}
+	svc := New(&mockUserRepo{}, audit, &mockProcessor{}, 0.45)
+	entries, err := svc.ListUnmatched(10)
+	if err != nil {
+		t.Fatalf("ListUnmatched: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].FaceImage != "stored-thumb" || entries[0].FaceThumb != "" {
+		t.Errorf("stored thumb not swapped in: %+v", entries[0])
+	}
+}
+
+func TestRecentAudit_UsesStoredThumb(t *testing.T) {
+	big := strings.Repeat("A", 9000)
+	audit := &mockAuditRepo{entries: []domain.AuditEntry{
+		{Time: time.Now().Truncate(time.Second), Endpoint: "recognize", Name: "alice", Status: "matched", FaceImage: big, FaceThumb: "stored-thumb"},
+	}}
+	svc := New(&mockUserRepo{}, audit, &mockProcessor{}, 0.45)
+	entries, err := svc.RecentAudit(10)
+	if err != nil {
+		t.Fatalf("RecentAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].FaceImage != "stored-thumb" || entries[0].FaceThumb != "" {
+		t.Errorf("stored thumb not swapped in: %+v", entries[0])
+	}
+}
+
+func TestBackfillAuditThumbnails(t *testing.T) {
+	large := makeNoiseJPEG(t, 200, 150)
+	small := makeTestJPEG(t, 50, 40)
+	garbage := strings.Repeat("x", 9000) // valid base64 alphabet, not a JPEG
+	base := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	audit := &mockAuditRepo{entries: []domain.AuditEntry{
+		{Time: base, Endpoint: "recognize", Name: "large", FaceImage: large},
+		{Time: base.Add(time.Second), Endpoint: "recognize", Name: "small", FaceImage: small},
+		{Time: base.Add(2 * time.Second), Endpoint: "recognize", Name: "noface"},
+		{Time: base.Add(3 * time.Second), Endpoint: "recognize", Name: "already", FaceImage: large, FaceThumb: "x"},
+		{Time: base.Add(4 * time.Second), Endpoint: "recognize", Name: "garbage", FaceImage: garbage},
+	}}
+	svc := New(&mockUserRepo{}, audit, &mockProcessor{}, 0.45)
+	n, err := svc.BackfillAuditThumbnails()
+	if err != nil {
+		t.Fatalf("BackfillAuditThumbnails: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("backfilled %d entries, want 1", n)
+	}
+	if len(audit.thumbSets) != 1 {
+		t.Fatalf("SetFaceThumb called %d times, want 1", len(audit.thumbSets))
+	}
+	if audit.thumbSets[0].faceImage != large {
+		t.Error("SetFaceThumb called for the wrong entry")
+	}
+	if audit.entries[0].FaceThumb == "" || len(audit.entries[0].FaceThumb) >= len(large) {
+		t.Errorf("entry 0 thumb not stored: len %d", len(audit.entries[0].FaceThumb))
+	}
+	if audit.entries[1].FaceThumb != "" || audit.entries[2].FaceThumb != "" || audit.entries[3].FaceThumb != "x" || audit.entries[4].FaceThumb != "" {
+		t.Errorf("unexpected thumbs after backfill: %+v", audit.entries)
+	}
+
+	// Idempotent: a second run updates nothing.
+	if n2, err := svc.BackfillAuditThumbnails(); err != nil || n2 != 0 {
+		t.Fatalf("second backfill: n=%d err=%v, want 0/nil", n2, err)
 	}
 }

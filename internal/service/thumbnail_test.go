@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +52,23 @@ func maxDimOf(t *testing.T, b64 string) int {
 		m = b.Dy()
 	}
 	return m
+}
+
+// makeNoiseJPEG builds a w×h random-noise JPEG and returns it base64-encoded.
+// Noise compresses poorly, so the output stays large even for modest sizes —
+// useful for exercising the "large image" thumbnail path.
+func makeNoiseJPEG(t *testing.T, w, h int) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	rnd := rand.New(rand.NewSource(1))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(rnd.Intn(256))
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode noise jpeg: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
 func TestThumbnailFromBase64_ShrinksLargeImage(t *testing.T) {
@@ -105,7 +124,12 @@ func TestThumbnailFromBase64_InvalidInput(t *testing.T) {
 }
 
 func TestListAuditPaginated_ThumbnailizesFaces(t *testing.T) {
-	large := makeTestJPEG(t, 200, 150)
+	// Noise compresses poorly, so it exceeds the thumbnail threshold; a
+	// smooth gradient of the same size would not.
+	large := makeNoiseJPEG(t, 200, 150)
+	if len(large) <= thumbnailSizeThreshold {
+		t.Fatalf("test image too small to exercise the thumbnail path: %d", len(large))
+	}
 	audit := &mockAuditRepo{
 		entries: []domain.AuditEntry{
 			{
@@ -139,5 +163,55 @@ func TestListAuditPaginated_ThumbnailizesFaces(t *testing.T) {
 	}
 	if m := maxDimOf(t, e.FaceImage); m > 96 {
 		t.Errorf("FaceImage max dimension = %d, want <= 96", m)
+	}
+}
+
+func TestThumbnailFromBase64_VeryLargeImage(t *testing.T) {
+	in := makeNoiseJPEG(t, 1920, 1080)
+	out, err := thumbnailFromBase64(in, 96)
+	if err != nil {
+		t.Fatalf("thumbnailFromBase64: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty thumbnail, got empty string")
+	}
+	if len(out) >= len(in) {
+		t.Errorf("thumbnail base64 len %d not smaller than input %d", len(out), len(in))
+	}
+	if m := maxDimOf(t, out); m > 96 {
+		t.Errorf("thumbnail max dimension = %d, want <= 96", m)
+	}
+}
+
+func TestApplyThumbnails_MixedEntries(t *testing.T) {
+	small := makeTestJPEG(t, 50, 40)
+	large := makeNoiseJPEG(t, 200, 150)
+	undecodable := strings.Repeat("x", 9000) // valid base64 alphabet, not a JPEG
+	entries := []domain.AuditEntry{
+		{FaceImage: strings.Repeat("A", 9000), FaceThumb: "stored-thumb"}, // stored thumb wins, no decode
+		{FaceImage: large},       // large, no thumb → generated
+		{FaceImage: small},       // small → untouched
+		{FaceImage: undecodable}, // undecodable → untouched
+		{},                       // no image → untouched
+	}
+	applyThumbnails(entries, 96)
+
+	if entries[0].FaceImage != "stored-thumb" || entries[0].FaceThumb != "" {
+		t.Errorf("stored thumb not swapped in: %+v", entries[0])
+	}
+	if entries[1].FaceImage == large || len(entries[1].FaceImage) >= len(large) {
+		t.Errorf("large entry not thumbnailized: len %d vs %d", len(entries[1].FaceImage), len(large))
+	}
+	if m := maxDimOf(t, entries[1].FaceImage); m > 96 {
+		t.Errorf("generated thumbnail max dimension = %d, want <= 96", m)
+	}
+	if entries[2].FaceImage != small {
+		t.Error("small entry modified")
+	}
+	if entries[3].FaceImage != undecodable {
+		t.Error("undecodable entry modified")
+	}
+	if entries[4].FaceImage != "" {
+		t.Error("empty entry modified")
 	}
 }
