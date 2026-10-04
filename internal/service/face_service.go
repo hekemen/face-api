@@ -131,6 +131,7 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 	}
 
 	// Audit entry
+	faceB64 := base64.StdEncoding.EncodeToString(crop.Data)
 	err = s.audit.Append([]domain.AuditEntry{{
 		Time:       time.Now(),
 		Endpoint:   "enroll",
@@ -138,7 +139,8 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 		Similarity: 1.0,
 		Matched:    true,
 		DurationMs: 0,
-		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+		FaceImage:  faceB64,
+		FaceThumb:  thumbnailForEntry(faceB64),
 	}})
 	if err != nil {
 		return fmt.Errorf("write audit entry: %w", err)
@@ -192,6 +194,7 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 	s.logf("validation result", "name", result.Name, "similarity", bestScore, "matched", matched, "timestamp", time.Now().Format(time.RFC3339))
 
 	// Audit entry
+	faceB64 := base64.StdEncoding.EncodeToString(crop.Data)
 	_ = s.audit.Append([]domain.AuditEntry{{
 		Time:       time.Now(),
 		Endpoint:   "recognize",
@@ -199,7 +202,8 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 		Similarity: bestScore,
 		Matched:    matched,
 		DurationMs: result.DurationMs,
-		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+		FaceImage:  faceB64,
+		FaceThumb:  thumbnailForEntry(faceB64),
 		Embedding:  crop.Embedding,
 	}})
 
@@ -275,6 +279,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 
 	if matched {
 		// Audit entry for matched face.
+		faceB64 := base64.StdEncoding.EncodeToString(crop.Data)
 		_ = s.audit.Append([]domain.AuditEntry{{
 			Time:       time.Now(),
 			Endpoint:   "stream-check",
@@ -283,7 +288,8 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Matched:    true,
 			Status:     domain.AuditStatusMatched,
 			DurationMs: dur.DurationMs,
-			FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+			FaceImage:  faceB64,
+			FaceThumb:  thumbnailForEntry(faceB64),
 			Embedding:  embedding,
 		}})
 		return &domain.StreamCheckResult{
@@ -297,6 +303,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 	}
 
 	// Audit entry for not-matched face (stores embedding for promotion).
+	faceB64 := base64.StdEncoding.EncodeToString(crop.Data)
 	_ = s.audit.Append([]domain.AuditEntry{{
 		Time:       time.Now(),
 		Endpoint:   "stream-check",
@@ -305,7 +312,8 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		Matched:    false,
 		Status:     domain.AuditStatusNotMatched,
 		DurationMs: dur.DurationMs,
-		FaceImage:  base64.StdEncoding.EncodeToString(crop.Data),
+		FaceImage:  faceB64,
+		FaceThumb:  thumbnailForEntry(faceB64),
 		Embedding:  embedding,
 	}})
 
@@ -416,7 +424,12 @@ func (s *FaceServiceImpl) DeleteUser(name string) error {
 // --- Audit ---
 
 func (s *FaceServiceImpl) RecentAudit(n int) ([]domain.AuditEntry, error) {
-	return s.audit.Recent(n)
+	entries, err := s.audit.Recent(n)
+	if err != nil {
+		return nil, err
+	}
+	applyThumbnails(entries, thumbMaxDim)
+	return entries, nil
 }
 
 func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]domain.AuditEntry, int, []string, error) {
@@ -424,7 +437,7 @@ func (s *FaceServiceImpl) ListAuditPaginated(opts domain.ListPaginatedOpts) ([]d
 	if err != nil {
 		return nil, 0, users, err
 	}
-	thumbnailsParallel(entries, 96)
+	applyThumbnails(entries, thumbMaxDim)
 	return entries, total, users, nil
 }
 
@@ -441,8 +454,37 @@ func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	thumbnailsParallel(entries, 96)
+	applyThumbnails(entries, thumbMaxDim)
 	return entries, nil
+}
+
+// BackfillAuditThumbnails generates a stored thumbnail for audit entries
+// whose FaceImage is large but has no FaceThumb (legacy data written before
+// the thumbnail field existed). It is idempotent: entries that already have
+// a thumb, or with a small/missing face image, are skipped. Returns the
+// number of entries updated.
+func (s *FaceServiceImpl) BackfillAuditThumbnails() (int, error) {
+	entries, err := s.audit.Recent(100000)
+	if err != nil {
+		return 0, fmt.Errorf("list audit entries: %w", err)
+	}
+	updated := 0
+	for i := range entries {
+		e := &entries[i]
+		if len(e.FaceImage) <= thumbnailSizeThreshold || e.FaceThumb != "" {
+			continue
+		}
+		thumb := thumbnailForEntry(e.FaceImage)
+		if thumb == "" {
+			continue
+		}
+		if err := s.audit.SetFaceThumb(e.Time, e.FaceImage, thumb); err != nil {
+			s.logf("backfill: set face thumb failed", "name", e.Name, "time", e.Time.Format(time.RFC3339), "error", err)
+			continue
+		}
+		updated++
+	}
+	return updated, nil
 }
 
 func (s *FaceServiceImpl) ListRecognizeEntries(opts domain.ListRecognizeEntriesOpts) ([]domain.AuditEntry, int, error) {

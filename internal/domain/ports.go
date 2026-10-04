@@ -45,6 +45,9 @@ type AuditRepository interface {
 	CountRecognizeEntries() (int, error)
 	// ComputeRecognizeSummary returns aggregate statistics for recognize-only entries.
 	ComputeRecognizeSummary() (RecognizeSummaryResponse, error)
+	// SetFaceThumb stores the thumbnail for the audit entry whose RFC3339
+	// timestamp and face_image both match. Returns an error if no entry matches.
+	SetFaceThumb(timestamp time.Time, faceImage, thumb string) error
 }
 
 // ListRecognizeEntriesOpts holds filtering and pagination parameters for recognize-only audit entries.

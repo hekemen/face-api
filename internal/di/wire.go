@@ -71,6 +71,13 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	faceService.WithRTSPReader(rtspReader)
 	faceService.WithLogger(&cfg.Logger)
 
+	// Backfill thumbnails for legacy audit entries (one-time, at startup).
+	if n, err := faceService.BackfillAuditThumbnails(); err != nil {
+		cfg.Logger.Warn().Err(err).Msg("backfill audit thumbnails failed")
+	} else if n > 0 {
+		cfg.Logger.Info().Int("entries", n).Msg("backfilled audit thumbnails")
+	}
+
 	mux := http.NewServeMux()
 	handlers.RegisterHandlers(mux)
 

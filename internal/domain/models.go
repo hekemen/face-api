@@ -26,6 +26,7 @@ type AuditEntry struct {
 	Status     string        `json:"status"`
 	DurationMs int64         `json:"duration_ms"`
 	FaceImage  string        `json:"face_image,omitempty"` // base64-encoded image; lazy-loaded via /api/audit/face
+	FaceThumb  string        `json:"face_thumb,omitempty"` // base64 JPEG thumbnail of a large FaceImage; swapped into FaceImage in list responses
 	Embedding  FaceEmbedding `json:"embedding"` // 512-dim embedding (for promotion)
 	HasFace    bool          `json:"has_face"`  // true if a face was detected (not "no_face")
 }

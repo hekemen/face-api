@@ -71,6 +71,7 @@ func (r *AuditRepository) Append(entries []domain.AuditEntry) error {
 				Status:     e.Status,
 				DurationMs: e.DurationMs,
 				FaceImage:  e.FaceImage,
+				FaceThumb:  e.FaceThumb,
 				Embedding:  e.Embedding,
 			})
 			if err != nil {
@@ -113,6 +114,7 @@ func (r *AuditRepository) Recent(n int) ([]domain.AuditEntry, error) {
 				Status:     j.Status,
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
+				FaceThumb:  j.FaceThumb,
 				Embedding:  j.Embedding,
 				HasFace:    j.FaceImage != "" && j.Status != domain.AuditStatusNoFace,
 			})
@@ -190,6 +192,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 					Status:     j.Status,
 					DurationMs: j.DurationMs,
 					FaceImage:  j.FaceImage,
+					FaceThumb:  j.FaceThumb,
 					HasFace:    j.FaceImage != "" && j.Status != domain.AuditStatusNoFace,
 				})
 			}
@@ -410,6 +413,7 @@ func (r *AuditRepository) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 				Status:     j.Status,
 				DurationMs: j.DurationMs,
 				FaceImage:  j.FaceImage,
+				FaceThumb:  j.FaceThumb,
 				Embedding:  j.Embedding,
 			})
 		}
@@ -441,6 +445,45 @@ func (r *AuditRepository) GetAuditFace(timestamp string) (string, error) {
 		return fmt.Errorf("audit entry %q not found", timestamp)
 	})
 	return faceImage, err
+}
+
+// SetFaceThumb stores the thumbnail for the audit entry whose stored
+// RFC3339 timestamp and face_image both match. Matching on both fields
+// disambiguates entries written within the same second. Returns an error
+// if no entry matches.
+func (r *AuditRepository) SetFaceThumb(timestamp time.Time, faceImage, thumb string) error {
+	targetTime := formatTime(timestamp)
+	var found bool
+	err := r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(auditBucket))
+		if b == nil {
+			return fmt.Errorf("bucket %q not found", auditBucket)
+		}
+		err := b.ForEach(func(k, v []byte) error {
+			var j auditEntryJSON
+			if err := json.Unmarshal(v, &j); err != nil {
+				return nil
+			}
+			if j.Time != targetTime || j.FaceImage != faceImage {
+				return nil
+			}
+			found = true
+			j.FaceThumb = thumb
+			val, err := json.Marshal(j)
+			if err != nil {
+				return err
+			}
+			return b.Put(k, val)
+		})
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("audit entry with time %q not found", targetTime)
+		}
+		return nil
+	})
+	return err
 }
 
 // ComputeStats returns aggregate statistics from all audit entries.
@@ -521,6 +564,7 @@ type auditEntryJSON struct {
 	Status     string               `json:"status"`
 	DurationMs int64                `json:"duration_ms"`
 	FaceImage  string               `json:"face_image,omitempty"`
+	FaceThumb  string               `json:"face_thumb,omitempty"`
 	Embedding  domain.FaceEmbedding `json:"embedding,omitempty"`
 }
 
