@@ -394,7 +394,8 @@ func TestStreamCheckUnreachable_E2E(t *testing.T) {
 }
 
 // TestRTSPNoFaceAuditEntry_E2E verifies that a stream-check with a solid-color
-// frame writes an audit entry with status="no_face" and the full frame image.
+// frame writes an audit entry with status="no_face" and no face image
+// (the no-face path intentionally stores no frame).
 func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	t.Log("=== Step 1: Streaming a solid-color (no-face) frame ===")
 	solid, err := solidJPEG(640, 480)
@@ -464,11 +465,13 @@ func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	if noFaceEntry.Similarity != 0 {
 		t.Errorf("no_face entry Similarity = %f, want 0", noFaceEntry.Similarity)
 	}
-	if noFaceEntry.FaceImage == "" {
-		t.Error("no_face entry has empty face_image (expected full frame)")
+	// The no-face path intentionally stores no face image (full frames
+	// would bloat the Audit bucket; HasFace must stay false).
+	if noFaceEntry.FaceImage != "" {
+		t.Errorf("no_face entry FaceImage = %q, want empty (no frame stored)", noFaceEntry.FaceImage)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, noFaceEntry.Time); err != nil {
 		t.Errorf("no_face entry has invalid time %q: %v", noFaceEntry.Time, err)
 	}
-	t.Log("=== PASS: RTSP no-face writes audit entry with status=no_face and full frame ===")
+	t.Log("=== PASS: RTSP no-face writes audit entry with status=no_face and no face image ===")
 }
