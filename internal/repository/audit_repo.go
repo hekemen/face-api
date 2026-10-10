@@ -136,13 +136,25 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 	}
 
 	var all []domain.AuditEntry
-	totalCount := 0
+	var totalCount int
+	var err error
+
+	// Without a filter, total_count is a cheap key count over the bucket
+	// (no JSON unmarshal) and the scan below can exit early once the
+	// requested page is collected. With a filter, total_count is the number
+	// of matching entries, which requires scanning the whole bucket.
+	if !hasFilter(opts) {
+		totalCount, err = r.CountAll()
+		if err != nil {
+			return nil, 0, nil, err
+		}
+	}
 
 	// Compute page boundaries (1-based indices).
 	pageLower := (opts.Page - 1) * opts.PerPage
 	pageUpper := opts.Page * opts.PerPage
 
-	err := r.db.View(func(tx *bolt.Tx) error {
+	err = r.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(auditBucket))
 		if b == nil {
 			return nil
@@ -150,8 +162,7 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 		c := b.Cursor()
 
 		// Iterate newest-first, count matching entries and collect the requested page.
-		// Early exit: once we've passed the requested page (totalCount > pageUpper),
-		// stop iterating—no need to process older entries we'll never return.
+		seen := 0
 		for _, v := c.Last(); v != nil; _, v = c.Prev() {
 			var j auditEntryJSON
 			if err := json.Unmarshal(v, &j); err != nil {
@@ -178,11 +189,14 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 				continue
 			}
 
-			totalCount++
+			seen++
+			if hasFilter(opts) {
+				totalCount++
+			}
 			// Only build and keep entries within the requested page.
 			// Include FaceImage so the frontend can render thumbnails directly;
 			// omit Embedding (too large for list view) — lazy-loaded if needed.
-			if totalCount <= pageUpper && totalCount > pageLower {
+			if seen <= pageUpper && seen > pageLower {
 				all = append(all, domain.AuditEntry{
 					Time:       parseTime(j.Time),
 					Endpoint:   j.Endpoint,
@@ -196,8 +210,10 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 					HasFace:    j.FaceImage != "" && j.Status != domain.AuditStatusNoFace,
 				})
 			}
-			// Past the requested page: stop iterating.
-			if totalCount > pageUpper {
+			// Without a filter the scan can stop once the page is past:
+			// total_count already comes from CountAll. With a filter the
+			// scan must run to the end to count all matches.
+			if !hasFilter(opts) && seen > pageUpper {
 				break
 			}
 		}
@@ -208,6 +224,12 @@ func (r *AuditRepository) ListPaginated(opts domain.ListPaginatedOpts) ([]domain
 	}
 
 	return all, totalCount, nil, nil
+}
+
+// hasFilter reports whether any ListPaginatedOpts filter is active.
+func hasFilter(opts domain.ListPaginatedOpts) bool {
+	return opts.NameFilter != "" || opts.EndpointFilter != "" ||
+		opts.MatchedFilter != "" || opts.StatusFilter != ""
 }
 
 // CountAll returns the total number of audit entries.
@@ -380,8 +402,16 @@ func (r *AuditRepository) ListRecognizeEntries(opts domain.ListRecognizeEntriesO
 	return all, totalCount, err
 }
 
+// listUnmatchedMaxScanBytes bounds how much of the Audit bucket ListUnmatched
+// unmarshals. Entries can carry full-resolution frame images (up to
+// MAX_UPLOAD_BYTES each), so an entry-count cap alone would not bound the scan;
+// a byte cap keeps the worst case to a few hundred ms at worst.
+const listUnmatchedMaxScanBytes = 32 * 1024 * 1024
+
 // ListUnmatched returns the newest n entries that are not matched
-// (status == "not_matched"). Returns newest first.
+// (status == "not_matched"). Returns newest first. The scan stops once
+// listUnmatchedMaxScanBytes of bucket data has been read, so a bucket full of
+// large non-matching frames cannot block the caller.
 func (r *AuditRepository) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 	if n <= 0 {
 		n = 100
@@ -393,7 +423,9 @@ func (r *AuditRepository) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 			return nil
 		}
 		c := b.Cursor()
-		for k, v := c.Last(); k != nil && len(entries) < n; k, v = c.Prev() {
+		var scanned int
+		for k, v := c.Last(); k != nil && len(entries) < n && scanned < listUnmatchedMaxScanBytes; k, v = c.Prev() {
+			scanned += len(v)
 			var j auditEntryJSON
 			if err := json.Unmarshal(v, &j); err != nil {
 				continue

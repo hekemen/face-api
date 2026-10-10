@@ -114,6 +114,9 @@ func (h *UIHandler) renderTemplate(w http.ResponseWriter, name string, data any)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Set Content-Length so reverse proxies don't buffer the whole
+	// document as chunked before the first byte reaches the browser.
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.Write(buf.Bytes())
 }
 
@@ -125,6 +128,7 @@ func (h *UIHandler) serveStatic(w http.ResponseWriter, r *http.Request, path, co
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Write(data)
 }
 
@@ -286,20 +290,11 @@ func (h *UIHandler) handleUIRecognize(w http.ResponseWriter, r *http.Request) {
 // --- Audit page ---
 
 func (h *UIHandler) handleUIAudit(w http.ResponseWriter, r *http.Request) {
-	entries, err := h.svc.RecentAudit(100)
-	if err != nil {
-		http.Error(w, "Failed to read audit log", http.StatusInternalServerError)
-		return
-	}
-
-	unmatched, _ := h.svc.ListUnmatched(100)
-
-	h.renderTemplate(w, "audit.html", uiPageData{
-		Entries:          entries,
-		Count:            len(entries),
-		UnmatchedEntries: unmatched,
-		TotalCollected:   0,
-	})
+	// The audit page renders client-side via fetch('../api/audit'); the
+	// template only needs GitVersion. Calling RecentAudit/ListUnmatched here
+	// would block the first byte — ListUnmatched in particular scans the
+	// whole Audit bucket when fewer than n unmatched entries exist.
+	h.renderTemplate(w, "audit.html", uiPageData{GitVersion: h.gitVersion})
 }
 
 // --- Stats page ---

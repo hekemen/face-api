@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/binary"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -367,5 +368,116 @@ func TestAuditRepositorySetFaceThumb(t *testing.T) {
 	other := ts.Add(time.Hour)
 	if err := repo.SetFaceThumb(other, "img-A", "thumb-X"); err == nil {
 		t.Error("SetFaceThumb with unknown time: want error, got nil")
+	}
+}
+
+// TestAuditRepositoryListUnmatchedScanCap verifies that ListUnmatched does not
+// unmarshal the entire Audit bucket when fewer than n unmatched entries exist.
+// 40 entries with ~1.5MB face images each: a full-bucket scan would return all
+// 40; the byte-based scan cap must stop the scan well before that.
+func TestAuditRepositoryListUnmatchedScanCap(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	repo := NewAuditRepository(db)
+
+	now := time.Now()
+	big := strings.Repeat("A", 1536*1024) // ~1.5MB per entry
+	entries := make([]domain.AuditEntry, 0, 40)
+	for i := 0; i < 40; i++ {
+		entries = append(entries, domain.AuditEntry{
+			Time:       now.Add(-time.Duration(i) * time.Minute),
+			Endpoint:   "stream-check",
+			Matched:    false,
+			Status:     domain.AuditStatusNotMatched,
+			DurationMs: 100,
+			FaceImage:  big,
+		})
+	}
+	if err := repo.Append(entries); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	unmatched, err := repo.ListUnmatched(100)
+	if err != nil {
+		t.Fatalf("ListUnmatched: %v", err)
+	}
+	if len(unmatched) == 0 {
+		t.Fatalf("expected some unmatched entries, got 0")
+	}
+	if len(unmatched) >= 40 {
+		t.Errorf("expected scan cap to limit results below 40, got %d", len(unmatched))
+	}
+}
+
+// TestAuditRepositoryListPaginatedTotalCountNoFilter verifies that total_count
+// reflects the full bucket size even when the page is collected from an early
+// scan (newest-first) that exits before seeing every entry.
+func TestAuditRepositoryListPaginatedTotalCountNoFilter(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	repo := NewAuditRepository(db)
+
+	now := time.Now()
+	entries := make([]domain.AuditEntry, 0, 25)
+	for i := 0; i < 25; i++ {
+		entries = append(entries, domain.AuditEntry{
+			Time:       now.Add(-time.Duration(i) * time.Minute),
+			Endpoint:   "stream-check",
+			Name:       "alice",
+			Matched:    true,
+			Status:     domain.AuditStatusMatched,
+			DurationMs: 100,
+		})
+	}
+	if err := repo.Append(entries); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	_, total, _, err := repo.ListPaginated(domain.ListPaginatedOpts{Page: 1, PerPage: 20})
+	if err != nil {
+		t.Fatalf("ListPaginated: %v", err)
+	}
+	if total != 25 {
+		t.Errorf("expected total_count 25, got %d", total)
+	}
+}
+
+// TestAuditRepositoryListPaginatedTotalCountWithFilter pins the filtered
+// total_count behavior: the total is the number of entries matching the filter,
+// not a capped scan count.
+func TestAuditRepositoryListPaginatedTotalCountWithFilter(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	repo := NewAuditRepository(db)
+
+	now := time.Now()
+	entries := make([]domain.AuditEntry, 0, 25)
+	for i := 0; i < 25; i++ {
+		name := "alice"
+		if i%2 == 1 {
+			name = "bob"
+		}
+		entries = append(entries, domain.AuditEntry{
+			Time:       now.Add(-time.Duration(i) * time.Minute),
+			Endpoint:   "stream-check",
+			Name:       name,
+			Matched:    true,
+			Status:     domain.AuditStatusMatched,
+			DurationMs: 100,
+		})
+	}
+	if err := repo.Append(entries); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	got, total, _, err := repo.ListPaginated(domain.ListPaginatedOpts{Page: 1, PerPage: 20, NameFilter: "bob"})
+	if err != nil {
+		t.Fatalf("ListPaginated: %v", err)
+	}
+	if total != 12 {
+		t.Errorf("expected filtered total_count 12, got %d", total)
+	}
+	if len(got) != 12 {
+		t.Errorf("expected 12 entries on page 1, got %d", len(got))
 	}
 }
