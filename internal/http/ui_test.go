@@ -81,6 +81,30 @@ func TestHandleUIAuditRendersWithoutBlockingServiceCalls(t *testing.T) {
 	}
 }
 
+// TestAuditPageFaceModalImageNoSrcResetLoop verifies the audit page's
+// face-modal image does not use an onerror handler that resets src to the
+// empty string. An <img src=""> resolves to the document's own URL; an onerror
+// that sets src='' again re-triggers the image load on every error, an infinite
+// loop that keeps the document's load event from ever firing. The symptom was
+// the audit page sticking in the browser "loading" state (stop button visible)
+// even though every API call and the client-side render succeeded.
+func TestAuditPageFaceModalImageNoSrcResetLoop(t *testing.T) {
+	svc := &fakeFaceService{}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/audit", nil)
+	h.handleUIAudit(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `onerror="this.src=''`) {
+		t.Errorf("audit page must not reset img src to empty in onerror: <img src=\"\"> resolves to the document URL and re-setting src='' on error loops forever, blocking the load event")
+	}
+}
+
 // TestRenderTemplateSetsContentLength verifies renderTemplate sets
 // Content-Length so reverse proxies (Traefik) can complete the response
 // without buffering the whole document as chunked.

@@ -24,7 +24,7 @@
     <strong id="faceModalTitle">Face Image</strong>
     <button onclick="closeFaceModal()" style="padding:0.2rem 0.5rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">✕</button>
   </div>
-  <img id="faceModalImage" src="" style="width:100%;border-radius:4px;" onerror="this.src='';this.alt='Failed to load image';" />
+  <img id="faceModalImage" src="" style="width:100%;border-radius:4px;" onerror="this.removeAttribute('src');this.alt='Failed to load image';" />
   <p id="faceModalFallback" style="display:none;color:var(--pico-muted-color);font-size:0.85rem;">No face image available for this entry.</p>
 </div>
 
