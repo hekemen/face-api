@@ -25,7 +25,7 @@
     <button onclick="closeFaceModal()" style="padding:0.2rem 0.5rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">✕</button>
   </div>
   <img id="faceModalImage" src="" style="width:100%;border-radius:4px;" onerror="this.removeAttribute('src');this.alt='Failed to load image';" />
-  <p id="faceModalFallback" style="display:none;color:var(--pico-muted-color);font-size:0.85rem;">No face image available for this entry.</p>
+  <p id="faceModalFallback" style="display:none;color:var(--pico-muted-color);font-size:0.85rem;">No image available for this entry.</p>
 </div>
 
 <!-- Promote modal -->
@@ -149,7 +149,7 @@
     closePromoteModal();
   };
 
-  function openFaceModal(timestamp) {
+  function openFaceModal(timestamp, status) {
     var backdrop = document.getElementById('modalBackdrop');
     var modal = document.getElementById('faceModal');
     var img = document.getElementById('faceModalImage');
@@ -157,7 +157,11 @@
     img.src = '';
     img.style.display = 'block';
     fallback.style.display = 'none';
-    document.getElementById('faceModalTitle').textContent = 'Face — ' + timestamp;
+    var title = 'Face — ' + timestamp;
+    if (status === 'no_face') {
+      title = 'Original frame — ' + timestamp;
+    }
+    document.getElementById('faceModalTitle').textContent = title;
     // Load the image
     fetch('../api/audit/face?id=' + encodeURIComponent(timestamp))
       .then(function(r) { return r.json(); })
@@ -355,7 +359,7 @@
               loadAndOpenFaceModal(id, this);
             } else if (entry && !entry.has_face) {
               // No-face entry: open modal directly to load the original frame
-              openFaceModal(id);
+              openFaceModal(id, entry.status);
             }
           });
         });

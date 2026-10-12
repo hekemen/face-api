@@ -105,6 +105,29 @@ func TestAuditPageFaceModalImageNoSrcResetLoop(t *testing.T) {
 	}
 }
 
+// TestAuditPageNoFaceFrameModal verifies the audit page renders the no-face
+// "View frame" button and that the face modal uses a distinct title for
+// no-face entries (the stored camera frame is not a face crop).
+func TestAuditPageNoFaceFrameModal(t *testing.T) {
+	svc := &fakeFaceService{}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/audit", nil)
+	h.handleUIAudit(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "no-face-link") {
+		t.Errorf("audit page must render the no-face 'View frame' button (no-face-link)")
+	}
+	if !strings.Contains(body, "Original frame") {
+		t.Errorf("audit page face modal must use an 'Original frame' title for no-face entries")
+	}
+}
+
 // TestRenderTemplateSetsContentLength verifies renderTemplate sets
 // Content-Length so reverse proxies (Traefik) can complete the response
 // without buffering the whole document as chunked.

@@ -233,7 +233,10 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 				Reason:            reason,
 			}, nil
 		}
-		// No-face: write audit entry (no face image stored — HasFace must stay false).
+		// No-face: store the captured camera frame (downscaled) so the audit
+		// entry can show what the camera saw. HasFace stays false because the
+		// status is no_face, so the listing keeps the "View frame" button.
+		frameB64 := noFaceFrameImage(imageData)
 		_ = s.audit.Append([]domain.AuditEntry{{
 			Time:       time.Now(),
 			Endpoint:   "stream-check",
@@ -242,6 +245,7 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 			Matched:    false,
 			Status:     domain.AuditStatusNoFace,
 			DurationMs: time.Since(start).Milliseconds(),
+			FaceImage:  frameB64,
 		}})
 		s.logf("no face detected", "timestamp", time.Now().Format(time.RFC3339))
 		return &domain.StreamCheckResult{
@@ -501,6 +505,35 @@ func (s *FaceServiceImpl) ComputeRecognizeStats() (domain.RecognizeSummaryRespon
 		TotalMatched:    summary.TotalMatched,
 		TotalNotMatched: summary.TotalNotMatched,
 	}, nil
+}
+
+// noFaceFrameMaxDim bounds the longest side of the camera frame stored in
+// no-face audit entries, keeping per-entry storage bounded while remaining
+// viewable in the audit popup.
+const noFaceFrameMaxDim = 640
+
+// noFaceFrameImage downscales the captured camera frame so its longest side
+// is at most noFaceFrameMaxDim and returns it as a base64 JPEG. It returns
+// "" if the frame cannot be decoded or encoded (graceful degradation — the
+// audit entry is still written, just without a frame).
+func noFaceFrameImage(imageData []byte) string {
+	img, err := decodeRGB(imageData)
+	if err != nil {
+		return ""
+	}
+	longest := img.w
+	if img.h > longest {
+		longest = img.h
+	}
+	if longest > noFaceFrameMaxDim {
+		scale := float64(noFaceFrameMaxDim) / float64(longest)
+		img = bilinearResize(img, round(float64(img.w)*scale), round(float64(img.h)*scale))
+	}
+	data, err := encodeFaceJPEG(img)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // isConnectionError checks if an error is likely a connection issue.

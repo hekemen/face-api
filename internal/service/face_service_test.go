@@ -251,9 +251,57 @@ func TestCheckStreamImageNoFaceWritesAuditEntry(t *testing.T) {
 	if e.Similarity != 0 {
 		t.Errorf("Similarity = %f, want 0", e.Similarity)
 	}
-	// FaceImage must be empty for no-face entries (HasFace must stay false).
+	// The frame here is not a decodable JPEG, so no frame image can be
+	// stored (graceful degradation). HasFace must stay false either way.
 	if e.FaceImage != "" {
-		t.Errorf("FaceImage = %q, want empty", e.FaceImage)
+		t.Errorf("FaceImage = %q, want empty for undecodable frame", e.FaceImage)
+	}
+}
+
+// TestCheckStreamImageNoFaceStoresFrameImage verifies that a no-face
+// stream-check stores the captured camera frame (downscaled) in the audit
+// entry so the UI can show what the camera saw. HasFace stays false because
+// the status is no_face, so the listing keeps the "View frame" button.
+func TestCheckStreamImageNoFaceStoresFrameImage(t *testing.T) {
+	audit := &mockAuditRepo{}
+	users := &mockUserRepo{}
+
+	// Processor returns no-face error.
+	proc := &mockProcessor{
+		err: fmt.Errorf("no face detected within 3 seconds"),
+	}
+
+	svc := New(users, audit, proc, 0.45)
+
+	// 800x600 gradient JPEG as the captured frame.
+	frameB64 := makeTestJPEG(t, 800, 600)
+	frame, err := base64.StdEncoding.DecodeString(frameB64)
+	if err != nil {
+		t.Fatalf("decode test frame: %v", err)
+	}
+
+	result, err := svc.CheckStreamImage(frame)
+	if err != nil {
+		t.Fatalf("CheckStreamImage: %v", err)
+	}
+	if result.Status != "not ok" {
+		t.Errorf("status = %q, want %q", result.Status, "not ok")
+	}
+
+	if len(audit.entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(audit.entries))
+	}
+	e := audit.entries[0]
+	if e.Status != domain.AuditStatusNoFace {
+		t.Errorf("Status = %q, want %q", e.Status, domain.AuditStatusNoFace)
+	}
+	if e.FaceImage == "" {
+		t.Fatalf("FaceImage = empty, want stored camera frame")
+	}
+	// Stored frame must be a valid JPEG downscaled so the longest side is
+	// at most noFaceFrameMaxDim (800x600 -> 640x480).
+	if got := maxDimOf(t, e.FaceImage); got > noFaceFrameMaxDim {
+		t.Errorf("stored frame longest side = %d, want <= %d", got, noFaceFrameMaxDim)
 	}
 }
 

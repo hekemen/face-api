@@ -394,8 +394,9 @@ func TestStreamCheckUnreachable_E2E(t *testing.T) {
 }
 
 // TestRTSPNoFaceAuditEntry_E2E verifies that a stream-check with a solid-color
-// frame writes an audit entry with status="no_face" and no face image
-// (the no-face path intentionally stores no frame).
+// frame writes an audit entry with status="no_face" that stores the captured
+// camera frame (face_image non-empty) while has_face stays false, so the
+// listing shows the "View frame" button instead of a thumbnail.
 func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	t.Log("=== Step 1: Streaming a solid-color (no-face) frame ===")
 	solid, err := solidJPEG(640, 480)
@@ -426,13 +427,14 @@ func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	defer auditResp.Body.Close()
 	var auditOut struct {
 		Entries []struct {
-			Time      string `json:"time"`
-			Endpoint  string `json:"endpoint"`
-			Name      string `json:"name"`
+			Time       string  `json:"time"`
+			Endpoint   string  `json:"endpoint"`
+			Name       string  `json:"name"`
 			Similarity float32 `json:"similarity"`
-			Matched   bool    `json:"matched"`
-			Status    string  `json:"status"`
-			FaceImage string  `json:"face_image"`
+			Matched    bool    `json:"matched"`
+			Status     string  `json:"status"`
+			FaceImage  string  `json:"face_image"`
+			HasFace    bool    `json:"has_face"`
 		} `json:"entries"`
 	}
 	if err := json.NewDecoder(auditResp.Body).Decode(&auditOut); err != nil {
@@ -447,6 +449,7 @@ func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 		Matched    bool    `json:"matched"`
 		Status     string  `json:"status"`
 		FaceImage  string  `json:"face_image"`
+		HasFace    bool    `json:"has_face"`
 	}
 	for i, e := range auditOut.Entries {
 		if e.Endpoint == "stream-check" && e.Status == "no_face" {
@@ -465,13 +468,17 @@ func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	if noFaceEntry.Similarity != 0 {
 		t.Errorf("no_face entry Similarity = %f, want 0", noFaceEntry.Similarity)
 	}
-	// The no-face path intentionally stores no face image (full frames
-	// would bloat the Audit bucket; HasFace must stay false).
-	if noFaceEntry.FaceImage != "" {
-		t.Errorf("no_face entry FaceImage = %q, want empty (no frame stored)", noFaceEntry.FaceImage)
+	// The no-face path stores the captured camera frame (downscaled) so the
+	// UI can show what the camera saw; has_face must stay false so the
+	// listing keeps the "View frame" button instead of a thumbnail.
+	if noFaceEntry.FaceImage == "" {
+		t.Errorf("no_face entry FaceImage = empty, want stored camera frame")
+	}
+	if noFaceEntry.HasFace {
+		t.Errorf("no_face entry has_face = true, want false (frame is not a face)")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, noFaceEntry.Time); err != nil {
 		t.Errorf("no_face entry has invalid time %q: %v", noFaceEntry.Time, err)
 	}
-	t.Log("=== PASS: RTSP no-face writes audit entry with status=no_face and no face image ===")
+	t.Log("=== PASS: RTSP no-face writes audit entry with status=no_face and stored camera frame ===")
 }
