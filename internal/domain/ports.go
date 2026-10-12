@@ -118,6 +118,10 @@ type FaceService interface {
 	ListUsers() ([]*User, error)
 	// DeleteUser removes a user by name.
 	DeleteUser(name string) error
+	// DeletePicture removes the picture (and its aligned embedding) at the
+	// given index. The user record is kept even when it ends up with zero
+	// pictures.
+	DeletePicture(name string, index int) error
 	// PromoteFromAudit promotes an audit entry to an enrolled user.
 	PromoteFromAudit(auditTime string, name string) error
 	// RecentAudit returns the newest audit entries.

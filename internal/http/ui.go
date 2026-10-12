@@ -64,7 +64,7 @@ func (h *UIHandler) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch path {
-	case "enroll", "enroll/delete":
+	case "enroll", "enroll/delete", "enroll/delete-picture":
 		h.handleUIEnroll(w, r)
 	case "recognize":
 		h.handleUIRecognize(w, r)
@@ -247,6 +247,29 @@ func (h *UIHandler) handleUIEnroll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result := "Deleted user: " + name
+		users, _ := h.svc.ListUsers()
+		h.renderTemplate(w, "enroll.html", uiPageData{Result: result, Class: "", Users: userSliceToInfos(users)})
+		return
+	}
+
+	// Handle per-picture delete form submission.
+	if r.FormValue("action") == "delete_picture" {
+		name := r.FormValue("user_name")
+		indexStr := r.FormValue("picture_index")
+		if name == "" || indexStr == "" {
+			h.renderTemplate(w, "enroll.html", uiPageData{Result: "Missing user name or picture index", Class: "error"})
+			return
+		}
+		index, err := strconv.Atoi(indexStr)
+		if err != nil {
+			h.renderTemplate(w, "enroll.html", uiPageData{Result: "Invalid picture index", Class: "error"})
+			return
+		}
+		if err := h.svc.DeletePicture(name, index); err != nil {
+			h.renderTemplate(w, "enroll.html", uiPageData{Result: "Delete picture failed: " + err.Error(), Class: "error"})
+			return
+		}
+		result := "Deleted picture for user: " + name
 		users, _ := h.svc.ListUsers()
 		h.renderTemplate(w, "enroll.html", uiPageData{Result: result, Class: "", Users: userSliceToInfos(users)})
 		return

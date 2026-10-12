@@ -425,6 +425,38 @@ func (s *FaceServiceImpl) DeleteUser(name string) error {
 	return nil
 }
 
+func (s *FaceServiceImpl) DeletePicture(name string, index int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, err := s.users.GetByName(name)
+	if err != nil {
+		return fmt.Errorf("check user: %w", err)
+	}
+	if index < 0 || index >= len(u.Embeddings) {
+		return fmt.Errorf("picture index %d out of range (user has %d pictures)", index, len(u.Embeddings))
+	}
+
+	// Embeddings and Pictures are index-aligned; remove both at `index`.
+	embeddings := make([]domain.FaceEmbedding, 0, len(u.Embeddings)-1)
+	embeddings = append(embeddings, u.Embeddings[:index]...)
+	embeddings = append(embeddings, u.Embeddings[index+1:]...)
+	pictures := make([]string, 0, len(u.Pictures)-1)
+	pictures = append(pictures, u.Pictures[:index]...)
+	pictures = append(pictures, u.Pictures[index+1:]...)
+
+	updated := &domain.User{
+		Name:       u.Name,
+		Embeddings: embeddings,
+		Pictures:   pictures,
+		UpdatedAt:  time.Now(),
+	}
+	if err := s.users.Save(updated); err != nil {
+		return fmt.Errorf("save user: %w", err)
+	}
+	return nil
+}
+
 // --- Audit ---
 
 func (s *FaceServiceImpl) RecentAudit(n int) ([]domain.AuditEntry, error) {

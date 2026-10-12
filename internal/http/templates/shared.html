@@ -12,6 +12,9 @@ body > nav[role="navigation"] ul { margin: 0; flex-wrap: wrap; gap: 0.25rem; }
 body > main.container { max-width: 960px; padding-bottom: 3rem; }
 body > main.container.has-header { max-width: 960px; padding: 1.5rem 1rem 3rem 1rem; }
 img.face-thumb { width: 64px; height: 64px; object-fit: cover; vertical-align: middle; border-radius: 6px; border: 1px solid var(--pico-muted-border-color); }
+.photo-cell { position: relative; display: inline-block; margin-right: 0.5rem; vertical-align: middle; }
+.photo-delete { position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--pico-muted-border-color); background: var(--pico-card-background-color, var(--pico-background-color)); color: var(--pico-error-color, #c00); font-size: 0.7rem; line-height: 1; cursor: pointer; padding: 0; }
+.photo-delete:hover { background: var(--pico-error-color, #c00); color: #fff; }
 img.face-preview, .preview-container img { max-width: 300px; max-height: 300px; border-radius: 8px; display: block; margin: 0 auto; box-shadow: var(--pico-card-box-shadow); }
 .preview-container { margin-top: 1rem; text-align: center; }
 #cameraStage { margin: 1rem 0; }

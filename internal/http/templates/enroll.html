@@ -1,6 +1,12 @@
 {{template "head" .}}
 {{template "subpageHeader" .}}
 <a href="./" class="back-link">← Dashboard</a>
+{{if .Result}}
+<div class="result {{.Class}}">{{.Result}}</div>
+{{end}}
+
+<button type="button" class="secondary" id="toggleEnrollForm">+ Add new user</button>
+<div id="enrollFormWrap" hidden>
 <form method="POST" action="enroll" enctype="multipart/form-data" id="enrollForm">
   <label for="name">Name:</label>
   <input type="text" id="name" name="name" required autocomplete="off">
@@ -25,11 +31,23 @@
 <div id="preview" class="preview-container" hidden>
   <img id="previewImg" src="" alt="Preview">
 </div>
-{{if .Result}}
-<div class="result {{.Class}}">{{.Result}}</div>
-{{end}}
+</div>
+
 {{template "camera" .}}
 {{template "imagepreview" .}}
+<script>
+(function() {
+  'use strict';
+  var btn = document.getElementById('toggleEnrollForm');
+  var wrap = document.getElementById('enrollFormWrap');
+  if (!btn || !wrap) return;
+  btn.addEventListener('click', function() {
+    var willShow = wrap.hidden;
+    wrap.hidden = !willShow;
+    btn.textContent = willShow ? 'Hide form' : '+ Add new user';
+  });
+})();
+</script>
 
 <h2 style="margin-top: 2rem;">Enrolled Users</h2>
 {{if .Users}}
@@ -39,19 +57,28 @@
 </thead>
 <tbody>
 {{range .Users}}
+{{$u := .}}
 <tr>
-  <td>{{.Name}}</td>
+  <td>{{$u.Name}}</td>
   <td>
-    {{range .Pictures}}
-    <img class="face-thumb" src="data:image/jpeg;base64,{{.}}" alt="face">
+    {{range $i, $p := $u.Pictures}}
+    <span class="photo-cell">
+      <img class="face-thumb" src="data:image/jpeg;base64,{{$p}}" alt="face">
+      <form method="POST" action="enroll/delete-picture" onsubmit="return confirm('Delete this photo for {{$u.Name}}? This cannot be undone.');">
+        <input type="hidden" name="action" value="delete_picture">
+        <input type="hidden" name="user_name" value="{{$u.Name}}">
+        <input type="hidden" name="picture_index" value="{{$i}}">
+        <button type="submit" class="photo-delete" title="Delete photo">✕</button>
+      </form>
+    </span>
     {{else}}
     -
     {{end}}
   </td>
-  <td>{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
+  <td>{{$u.UpdatedAt.Format "2006-01-02 15:04"}}</td>
   <td>
-    <form method="POST" action="enroll/delete" style="display: inline;" onsubmit="return confirm('Delete user {{.Name}}? This cannot be undone.');">
-      <input type="hidden" name="user_name" value="{{.Name}}">
+    <form method="POST" action="enroll/delete" style="display: inline;" onsubmit="return confirm('Delete user {{$u.Name}}? This cannot be undone.');">
+      <input type="hidden" name="user_name" value="{{$u.Name}}">
       <button type="submit" class="outline secondary" style="padding: 0.25rem 0.5rem; font-size: 0.85rem;" onclick="this.closest('form').querySelector('input[name=action]').value='delete'">Delete</button>
       <input type="hidden" name="action" value="delete">
     </form>

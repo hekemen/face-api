@@ -785,3 +785,65 @@ func TestBackfillAuditThumbnails(t *testing.T) {
 		t.Fatalf("second backfill: n=%d err=%v, want 0/nil", n2, err)
 	}
 }
+
+func TestDeletePicture(t *testing.T) {
+	users := &mockUserRepo{
+		users: []*domain.User{
+			{
+				Name: "alice",
+				Embeddings: []domain.FaceEmbedding{
+					{1, 0, 0}, {0, 1, 0}, {0, 0, 1},
+				},
+				Pictures: []string{"p0", "p1", "p2"},
+			},
+		},
+	}
+	audit := &mockAuditRepo{}
+	svc := New(users, audit, &mockProcessor{}, 0.45)
+
+	// Delete the middle picture; embeddings and pictures stay aligned.
+	if err := svc.DeletePicture("alice", 1); err != nil {
+		t.Fatalf("DeletePicture(alice, 1): %v", err)
+	}
+	u, err := users.GetByName("alice")
+	if err != nil {
+		t.Fatalf("GetByName after delete: %v", err)
+	}
+	if len(u.Pictures) != 2 || u.Pictures[0] != "p0" || u.Pictures[1] != "p2" {
+		t.Errorf("pictures = %v, want [p0 p2]", u.Pictures)
+	}
+	if len(u.Embeddings) != 2 {
+		t.Errorf("embeddings len = %d, want 2 (must stay aligned with pictures)", len(u.Embeddings))
+	}
+	if u.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt not refreshed after picture delete")
+	}
+
+	// Out-of-range index is an error.
+	if err := svc.DeletePicture("alice", 5); err == nil {
+		t.Error("DeletePicture with out-of-range index: want error, got nil")
+	}
+	if err := svc.DeletePicture("alice", -1); err == nil {
+		t.Error("DeletePicture with negative index: want error, got nil")
+	}
+
+	// Unknown user is an error.
+	if err := svc.DeletePicture("nobody", 0); err == nil {
+		t.Error("DeletePicture for unknown user: want error, got nil")
+	}
+
+	// Deleting the last picture keeps the user with empty arrays.
+	if err := svc.DeletePicture("alice", 0); err != nil {
+		t.Fatalf("DeletePicture(alice, 0): %v", err)
+	}
+	if err := svc.DeletePicture("alice", 0); err != nil {
+		t.Fatalf("DeletePicture(alice, 0) on second picture: %v", err)
+	}
+	u, err = users.GetByName("alice")
+	if err != nil {
+		t.Fatalf("user must be kept after last picture delete: %v", err)
+	}
+	if len(u.Pictures) != 0 || len(u.Embeddings) != 0 {
+		t.Errorf("user after last delete: pictures=%d embeddings=%d, want 0/0", len(u.Pictures), len(u.Embeddings))
+	}
+}

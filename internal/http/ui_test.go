@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"h2hsecure.com/face/internal/domain"
 )
@@ -15,6 +16,13 @@ import (
 type fakeFaceService struct {
 	recentAuditCalls   int
 	listUnmatchedCalls int
+	users              []*domain.User
+	deletePictureCalls []deletePictureCall
+}
+
+type deletePictureCall struct {
+	name  string
+	index int
 }
 
 func (f *fakeFaceService) EnrollImage(name string, imageData []byte) error { return nil }
@@ -27,8 +35,12 @@ func (f *fakeFaceService) CheckStream(rtspURL string) (*domain.StreamCheckResult
 func (f *fakeFaceService) CheckStreamImage(imageData []byte) (*domain.StreamCheckResult, error) {
 	return nil, nil
 }
-func (f *fakeFaceService) ListUsers() ([]*domain.User, error) { return nil, nil }
+func (f *fakeFaceService) ListUsers() ([]*domain.User, error) { return f.users, nil }
 func (f *fakeFaceService) DeleteUser(name string) error       { return nil }
+func (f *fakeFaceService) DeletePicture(name string, index int) error {
+	f.deletePictureCalls = append(f.deletePictureCalls, deletePictureCall{name: name, index: index})
+	return nil
+}
 func (f *fakeFaceService) PromoteFromAudit(auditTime, name string) error {
 	return nil
 }
@@ -125,6 +137,89 @@ func TestAuditPageNoFaceFrameModal(t *testing.T) {
 	}
 	if !strings.Contains(body, "Original frame") {
 		t.Errorf("audit page face modal must use an 'Original frame' title for no-face entries")
+	}
+}
+
+// TestEnrollPageFormHiddenByDefault verifies the enroll page ships with the
+// "add new user" form collapsed behind a toggle button (hidden by default on
+// every load; no state persistence).
+func TestEnrollPageFormHiddenByDefault(t *testing.T) {
+	svc := &fakeFaceService{}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/enroll", nil)
+	h.handleUIEnroll(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="enrollFormWrap" hidden`) {
+		t.Error("enroll form must be hidden by default (enrollFormWrap with hidden attribute)")
+	}
+	if !strings.Contains(body, `id="toggleEnrollForm"`) {
+		t.Error("expected the '+ Add new user' toggle button (toggleEnrollForm)")
+	}
+}
+
+// TestEnrollPageRendersPictureDeleteForms verifies each enrolled picture gets
+// a delete form posting to the relative enroll/delete-picture endpoint with
+// the user name and picture index.
+func TestEnrollPageRendersPictureDeleteForms(t *testing.T) {
+	svc := &fakeFaceService{
+		users: []*domain.User{
+			{Name: "alice", Pictures: []string{"p0", "p1"}, UpdatedAt: time.Now()},
+			{Name: "bob", Pictures: nil, UpdatedAt: time.Now()},
+		},
+	}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/enroll", nil)
+	h.handleUIEnroll(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if got := strings.Count(body, `action="enroll/delete-picture"`); got != 2 {
+		t.Errorf("expected 2 picture delete forms (alice has 2 pictures), got %d", got)
+	}
+	if !strings.Contains(body, `name="user_name" value="alice"`) {
+		t.Error("picture delete form must carry the user name")
+	}
+	if !strings.Contains(body, `name="picture_index" value="0"`) || !strings.Contains(body, `name="picture_index" value="1"`) {
+		t.Error("picture delete forms must carry picture_index 0 and 1")
+	}
+}
+
+// TestEnrollPageDeletePicture verifies a delete_picture form POST calls
+// DeletePicture with the parsed index and re-renders the page with a success
+// result and the refreshed user list.
+func TestEnrollPageDeletePicture(t *testing.T) {
+	svc := &fakeFaceService{
+		users: []*domain.User{
+			{Name: "alice", Pictures: []string{"p0", "p1"}, UpdatedAt: time.Now()},
+		},
+	}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/ui/enroll/delete-picture",
+		strings.NewReader("action=delete_picture&user_name=alice&picture_index=1"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.handleUIEnroll(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(svc.deletePictureCalls) != 1 || svc.deletePictureCalls[0].name != "alice" || svc.deletePictureCalls[0].index != 1 {
+		t.Fatalf("DeletePicture calls = %+v, want [{alice 1}]", svc.deletePictureCalls)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Deleted picture for user: alice") {
+		t.Error("expected success result in re-rendered page")
 	}
 }
 
