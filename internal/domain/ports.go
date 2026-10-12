@@ -21,6 +21,14 @@ type UserRepository interface {
 	ListAll() ([]*User, error)
 }
 
+// SettingsRepository persists runtime settings.
+type SettingsRepository interface {
+	// Get returns the stored settings, or nil when none are stored yet.
+	Get() (*Settings, error)
+	// Save stores the settings (upsert).
+	Save(s *Settings) error
+}
+
 // AuditRepository manages audit trail entries.
 type AuditRepository interface {
 	// Append writes one or more audit entries.
@@ -139,6 +147,11 @@ type FaceService interface {
 	ListRecognizeEntries(opts ListRecognizeEntriesOpts) ([]AuditEntry, int, error)
 	// ComputeRecognizeStats returns aggregate statistics for recognize-only entries.
 	ComputeRecognizeStats() (RecognizeSummaryResponse, error)
+	// GetSettings returns the current runtime settings (live values).
+	GetSettings() (*Settings, error)
+	// SetThreshold updates the face-match threshold. The value must be in
+	// (0, 1). It is persisted before the in-memory value is updated.
+	SetThreshold(v float32) error
 }
 
 // --- Response types ---
@@ -231,6 +244,19 @@ type RecognizeListResponse struct {
 	Page              int                   `json:"page"`
 	PerPage           int                   `json:"per_page"`
 	TotalPages        int                   `json:"total_pages"`
+}
+
+// SettingsResponse is returned by the GET /settings endpoint.
+type SettingsResponse struct {
+	OperationDuration
+	Threshold float32 `json:"threshold"`
+}
+
+// SettingsUpdateResult is returned by the POST /settings endpoint.
+type SettingsUpdateResult struct {
+	OperationDuration
+	Status    string  `json:"status"`
+	Threshold float32 `json:"threshold"`
 }
 
 // RecognizeAuditEntry is an audit entry for recognize-only responses.

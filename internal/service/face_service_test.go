@@ -847,3 +847,113 @@ func TestDeletePicture(t *testing.T) {
 		t.Errorf("user after last delete: pictures=%d embeddings=%d, want 0/0", len(u.Pictures), len(u.Embeddings))
 	}
 }
+
+// --- Settings / threshold tests ---
+
+// mockSettingsRepo implements domain.SettingsRepository for threshold tests.
+type mockSettingsRepo struct {
+	settings *domain.Settings // value returned by Get (nil = unset)
+	saved    *domain.Settings // last value passed to Save
+	saveErr  error
+}
+
+func (m *mockSettingsRepo) Get() (*domain.Settings, error) { return m.settings, nil }
+
+func (m *mockSettingsRepo) Save(s *domain.Settings) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.saved = s
+	return nil
+}
+
+// TestSetThresholdUpdatesSettings verifies SetThreshold persists the new value
+// and updates the live threshold reported by GetSettings.
+func TestSetThresholdUpdatesSettings(t *testing.T) {
+	repo := &mockSettingsRepo{}
+	svc := New(&mockUserRepo{}, &mockAuditRepo{}, &mockProcessor{}, 0.45)
+	svc.WithSettingsRepo(repo)
+
+	if err := svc.SetThreshold(0.5); err != nil {
+		t.Fatalf("SetThreshold(0.5): %v", err)
+	}
+	if repo.saved == nil || repo.saved.Threshold != 0.5 {
+		t.Errorf("expected 0.5 persisted before memory update, got %+v", repo.saved)
+	}
+	st, err := svc.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if st.Threshold != 0.5 {
+		t.Errorf("expected live threshold 0.5, got %v", st.Threshold)
+	}
+}
+
+// TestSetThresholdRejectsOutOfRange verifies values outside (0, 1) are
+// rejected without persisting or changing the live threshold.
+func TestSetThresholdRejectsOutOfRange(t *testing.T) {
+	repo := &mockSettingsRepo{}
+	svc := New(&mockUserRepo{}, &mockAuditRepo{}, &mockProcessor{}, 0.45)
+	svc.WithSettingsRepo(repo)
+
+	for _, v := range []float32{0, 1, 1.5, -0.1} {
+		if err := svc.SetThreshold(v); err == nil {
+			t.Errorf("SetThreshold(%v): want error, got nil", v)
+		}
+	}
+	if repo.saved != nil {
+		t.Errorf("out-of-range values must not be persisted, got %+v", repo.saved)
+	}
+	st, _ := svc.GetSettings()
+	if st.Threshold != 0.45 {
+		t.Errorf("live threshold must stay 0.45 after rejected updates, got %v", st.Threshold)
+	}
+}
+
+// TestSetThresholdPersistErrorLeavesMemoryUntouched verifies a persistence
+// failure leaves the live threshold unchanged.
+func TestSetThresholdPersistErrorLeavesMemoryUntouched(t *testing.T) {
+	repo := &mockSettingsRepo{saveErr: fmt.Errorf("db down")}
+	svc := New(&mockUserRepo{}, &mockAuditRepo{}, &mockProcessor{}, 0.45)
+	svc.WithSettingsRepo(repo)
+
+	if err := svc.SetThreshold(0.5); err == nil {
+		t.Fatal("SetThreshold with failing repo: want error, got nil")
+	}
+	st, _ := svc.GetSettings()
+	if st.Threshold != 0.45 {
+		t.Errorf("live threshold must stay 0.45 after persist failure, got %v", st.Threshold)
+	}
+}
+
+// TestWithSettingsRepoAppliesStoredValue verifies a persisted threshold
+// overrides the constructor value at startup.
+func TestWithSettingsRepoAppliesStoredValue(t *testing.T) {
+	repo := &mockSettingsRepo{settings: &domain.Settings{Threshold: 0.62}}
+	svc := New(&mockUserRepo{}, &mockAuditRepo{}, &mockProcessor{}, 0.45)
+	svc.WithSettingsRepo(repo)
+
+	st, err := svc.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if st.Threshold != 0.62 {
+		t.Errorf("expected stored threshold 0.62 to override constructor value, got %v", st.Threshold)
+	}
+}
+
+// TestWithSettingsRepoNoStoredValueKeepsConstructorThreshold verifies the
+// constructor threshold is kept when nothing is persisted yet.
+func TestWithSettingsRepoNoStoredValueKeepsConstructorThreshold(t *testing.T) {
+	repo := &mockSettingsRepo{}
+	svc := New(&mockUserRepo{}, &mockAuditRepo{}, &mockProcessor{}, 0.45)
+	svc.WithSettingsRepo(repo)
+
+	st, err := svc.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if st.Threshold != 0.45 {
+		t.Errorf("expected constructor threshold 0.45, got %v", st.Threshold)
+	}
+}

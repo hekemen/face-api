@@ -62,6 +62,8 @@ func (h *Handlers) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/audit/recognize-summary", h.handleRecognizeSummary)
 	mux.HandleFunc("GET /api/audit/recognize-list", h.handleRecognizeList)
 	mux.HandleFunc("GET /stats", h.handleListStats)
+	mux.HandleFunc("GET /settings", h.handleSettings)
+	mux.HandleFunc("POST /settings", h.handleSettings)
 	mux.HandleFunc("POST /audit/promote", h.handlePromoteFromAudit)
 	mux.HandleFunc("GET /healthz", h.handleHealthz)
 	mux.HandleFunc("GET /readyz", h.handleReadyz)
@@ -511,6 +513,47 @@ func (h *Handlers) handleListStats(w http.ResponseWriter, r *http.Request) {
 		"last_matched":      lastMatched,
 		"duration_ms":       time.Since(start).Milliseconds(),
 	})
+}
+
+// handleSettings returns the current settings (GET) or updates the
+// face-match threshold (POST with a "threshold" form field).
+func (h *Handlers) handleSettings(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	switch r.Method {
+	case http.MethodGet:
+		st, err := h.svc.GetSettings()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, domain.SettingsResponse{
+			OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+			Threshold:         st.Threshold,
+		})
+	case http.MethodPost:
+		raw := r.FormValue("threshold")
+		if raw == "" {
+			writeError(w, http.StatusBadRequest, "missing threshold field")
+			return
+		}
+		v, err := strconv.ParseFloat(raw, 32)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid threshold value")
+			return
+		}
+		if err := h.svc.SetThreshold(float32(v)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, domain.SettingsUpdateResult{
+			OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+			Status:            "updated",
+			Threshold:         float32(v),
+		})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
 }
 
 func (h *Handlers) handlePromoteFromAudit(w http.ResponseWriter, r *http.Request) {

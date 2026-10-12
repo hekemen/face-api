@@ -114,6 +114,9 @@ func TestMain(m *testing.M) {
 
 	imgStartReq := testcontainers.ContainerRequest{
 		Image:        imgName,
+		// UI enabled (no auth token) so the settings page can be exercised
+		// end-to-end; API routes stay open when no token is configured.
+		Env:          map[string]string{"ENABLE_UI": "true"},
 		WaitingFor:   wait.ForHTTP("/users").WithPort(testPort),
 		ExposedPorts: []string{testPort},
 	}
@@ -697,6 +700,147 @@ func TestStatsEndpoint_E2E(t *testing.T) {
 	}
 	t.Logf("stats: %+v", statsOut)
 	t.Log("=== PASS: /stats includes all expected fields ===")
+}
+
+// TestSettingsEndpoint_E2E verifies the /settings API: a fresh container
+// returns the default threshold, a valid POST updates it, and out-of-range
+// values are rejected with 400. The threshold is restored at the end so
+// later tests see the original value.
+func TestSettingsEndpoint_E2E(t *testing.T) {
+	t.Log("=== Verifying GET /settings returns the default threshold ===")
+	resp, err := http.Get(baseURL + "/settings")
+	if err != nil {
+		t.Fatalf("GET /settings failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 from GET /settings, got %d: %s", resp.StatusCode, string(body))
+	}
+	var out map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode GET /settings: %v", err)
+	}
+	if v, ok := out["threshold"].(float64); !ok || v != 0.45 {
+		t.Fatalf("expected default threshold 0.45, got %v", out["threshold"])
+	}
+	if _, ok := out["duration_ms"]; !ok {
+		t.Errorf("GET /settings missing duration_ms")
+	}
+
+	t.Log("=== Verifying POST /settings updates the threshold ===")
+	form := url.Values{}
+	form.Set("threshold", "0.5")
+	resp, err = http.PostForm(baseURL+"/settings", form)
+	if err != nil {
+		t.Fatalf("POST /settings failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 from POST /settings, got %d: %s", resp.StatusCode, string(body))
+	}
+	var updated map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode POST /settings: %v", err)
+	}
+	if updated["status"] != "updated" {
+		t.Errorf("expected status updated, got %v", updated["status"])
+	}
+	if v, _ := updated["threshold"].(float64); v != 0.5 {
+		t.Errorf("expected threshold 0.5 in response, got %v", updated["threshold"])
+	}
+
+	// Re-read: the update must be live.
+	resp, err = http.Get(baseURL + "/settings")
+	if err != nil {
+		t.Fatalf("re-read GET /settings failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var reread map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&reread); err != nil {
+		t.Fatalf("decode re-read /settings: %v", err)
+	}
+	if v, _ := reread["threshold"].(float64); v != 0.5 {
+		t.Errorf("expected re-read threshold 0.5, got %v", reread["threshold"])
+	}
+
+	t.Log("=== Verifying out-of-range POST /settings is rejected ===")
+	form = url.Values{}
+	form.Set("threshold", "1.5")
+	resp, err = http.PostForm(baseURL+"/settings", form)
+	if err != nil {
+		t.Fatalf("POST /settings (invalid) failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for threshold 1.5, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Restore the default so later tests see the original threshold.
+	form = url.Values{}
+	form.Set("threshold", "0.45")
+	resp, err = http.PostForm(baseURL+"/settings", form)
+	if err != nil {
+		t.Fatalf("restore POST /settings failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 restoring threshold, got %d: %s", resp.StatusCode, string(body))
+	}
+	t.Log("=== PASS: /settings API ===")
+}
+
+// TestSettingsUIPage_E2E verifies the /ui/settings page renders the match
+// sensitivity form, the description, and the header settings link. The e2e
+// container runs with ENABLE_UI=true and no auth token, so an empty
+// password logs in and issues the auth cookie.
+func TestSettingsUIPage_E2E(t *testing.T) {
+	// Login with an empty password (matches the empty token) without
+	// following the redirect, to capture the auth cookie issuance.
+	loginClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	form := url.Values{}
+	form.Set("password", "")
+	resp, err := loginClient.PostForm(baseURL+"/ui/auth", form)
+	if err != nil {
+		t.Fatalf("login POST /ui/auth failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 from /ui/auth, got %d", resp.StatusCode)
+	}
+
+	// Fetch the settings page with the auth cookie (empty value matches
+	// the empty token).
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/ui/settings", nil)
+	if err != nil {
+		t.Fatalf("build /ui/settings request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: "face_api_auth", Value: ""})
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /ui/settings failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 from /ui/settings, got %d: %s", resp.StatusCode, string(body))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read /ui/settings body: %v", err)
+	}
+	page := string(body)
+	for _, want := range []string{`name="threshold"`, "similarity", "settings-link"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("settings page missing %q", want)
+		}
+	}
+	t.Log("=== PASS: /ui/settings page ===")
 }
 
 // TestAuditUnmatched_E2E verifies GET /api/audit-unmatched returns valid JSON.

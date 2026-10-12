@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +19,8 @@ type fakeFaceService struct {
 	listUnmatchedCalls int
 	users              []*domain.User
 	deletePictureCalls []deletePictureCall
+	threshold          float32
+	setThresholdErr    error
 }
 
 type deletePictureCall struct {
@@ -64,6 +67,19 @@ func (f *fakeFaceService) ListRecognizeEntries(opts domain.ListRecognizeEntriesO
 }
 func (f *fakeFaceService) ComputeRecognizeStats() (domain.RecognizeSummaryResponse, error) {
 	return domain.RecognizeSummaryResponse{}, nil
+}
+func (f *fakeFaceService) GetSettings() (*domain.Settings, error) {
+	return &domain.Settings{Threshold: f.threshold}, nil
+}
+func (f *fakeFaceService) SetThreshold(v float32) error {
+	if f.setThresholdErr != nil {
+		return f.setThresholdErr
+	}
+	if v <= 0 || v >= 1 {
+		return fmt.Errorf("threshold must be between 0 and 1")
+	}
+	f.threshold = v
+	return nil
 }
 
 // TestHandleUIAuditRendersWithoutBlockingServiceCalls verifies the audit page
@@ -264,5 +280,110 @@ func TestServeStaticSetsContentLength(t *testing.T) {
 	}
 	if cl != strconv.Itoa(w.Body.Len()) {
 		t.Errorf("Content-Length %s does not match body length %d", cl, w.Body.Len())
+	}
+}
+
+// --- Settings page tests ---
+
+// TestHandleUISettingsRenders verifies the settings page renders the match
+// sensitivity form prefilled with the current threshold and the description.
+func TestHandleUISettingsRenders(t *testing.T) {
+	svc := &fakeFaceService{threshold: 0.45}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/settings", nil)
+	h.handleUISettings(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String()[:min(len(w.Body.String()), 200)])
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `name="threshold"`) {
+		t.Errorf("expected threshold form input in settings page")
+	}
+	if !strings.Contains(body, `value="0.45"`) {
+		t.Errorf("expected threshold input prefilled with current value 0.45")
+	}
+	if !strings.Contains(body, "similarity") {
+		t.Errorf("expected a description explaining the similarity threshold")
+	}
+	if !strings.Contains(body, "settings-link") {
+		t.Errorf("expected settings link in the page header")
+	}
+}
+
+// TestHandleUISettingsPostUpdates verifies a valid POST updates the threshold
+// and re-renders with a success message and the new value.
+func TestHandleUISettingsPostUpdates(t *testing.T) {
+	svc := &fakeFaceService{threshold: 0.45}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/ui/settings", strings.NewReader("threshold=0.5"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.handleUISettings(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if svc.threshold != 0.5 {
+		t.Errorf("expected service threshold 0.5 after POST, got %v", svc.threshold)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Threshold updated") {
+		t.Errorf("expected success message after update")
+	}
+	if !strings.Contains(body, `value="0.5"`) {
+		t.Errorf("expected form prefilled with new value 0.5")
+	}
+}
+
+// TestHandleUISettingsPostInvalid verifies an out-of-range POST fails with an
+// error message and leaves the threshold unchanged.
+func TestHandleUISettingsPostInvalid(t *testing.T) {
+	svc := &fakeFaceService{threshold: 0.45}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/ui/settings", strings.NewReader("threshold=1.5"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.handleUISettings(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (page re-render with error), got %d", w.Code)
+	}
+	if svc.threshold != 0.45 {
+		t.Errorf("threshold must stay 0.45 after invalid POST, got %v", svc.threshold)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `class="result error"`) {
+		t.Errorf("expected error result on invalid threshold")
+	}
+	if !strings.Contains(body, `value="0.45"`) {
+		t.Errorf("expected form to still show 0.45 after invalid POST")
+	}
+}
+
+// TestHeadersIncludeSettingsLink verifies both header variants (dashboard and
+// subpage) expose the settings link next to the auto-reload control.
+func TestHeadersIncludeSettingsLink(t *testing.T) {
+	svc := &fakeFaceService{threshold: 0.45}
+	h := NewUIHandler(svc, true, "")
+
+	// Dashboard page uses dashHeader.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	h.renderIndex(w, r)
+	if !strings.Contains(w.Body.String(), "settings-link") {
+		t.Errorf("dashboard header must include the settings link")
+	}
+
+	// Subpage (audit) uses subpageHeader.
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "/ui/audit", nil)
+	h.handleUIAudit(w, r)
+	if !strings.Contains(w.Body.String(), "settings-link") {
+		t.Errorf("subpage header must include the settings link")
 	}
 }

@@ -12,6 +12,11 @@ type FaceEmbedding []float32
 // (and their parallel embeddings) a single user may hold.
 const MaxPicturesPerUser = 5
 
+// Settings holds runtime-configurable application settings.
+type Settings struct {
+	Threshold float32 `json:"threshold"` // face-match cosine-similarity threshold
+}
+
 // User represents an enrolled identity with one or more face embeddings.
 type User struct {
 	Name       string

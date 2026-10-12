@@ -72,6 +72,8 @@ func (h *UIHandler) handleUI(w http.ResponseWriter, r *http.Request) {
 		h.handleUIAudit(w, r)
 	case "stats":
 		h.handleUIStats(w, r)
+	case "settings":
+		h.handleUISettings(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -168,6 +170,7 @@ type uiPageData struct {
 	GitVersion         string
 	GitHubURL          string
 	RTSPURL            string
+	Threshold          float32
 }
 
 func (h *UIHandler) renderIndex(w http.ResponseWriter, r *http.Request) {
@@ -344,6 +347,43 @@ func (h *UIHandler) handleUIStats(w http.ResponseWriter, r *http.Request) {
 		LastMatched:     lastMatchedStr,
 	}
 	h.renderTemplate(w, "stats.html", uiPageData{Stats: sr})
+}
+
+// handleUISettings renders the settings page (GET) and updates the
+// face-match threshold (POST with a "threshold" form field).
+func (h *UIHandler) handleUISettings(w http.ResponseWriter, r *http.Request) {
+	current := func() float32 {
+		if st, err := h.svc.GetSettings(); err == nil {
+			return st.Threshold
+		}
+		return 0
+	}
+
+	if r.Method == http.MethodPost {
+		raw := r.FormValue("threshold")
+		if raw == "" {
+			h.renderTemplate(w, "settings.html", uiPageData{Result: "Missing threshold value", Class: "error", Threshold: current()})
+			return
+		}
+		v, err := strconv.ParseFloat(raw, 32)
+		if err != nil {
+			h.renderTemplate(w, "settings.html", uiPageData{Result: "Invalid threshold value", Class: "error", Threshold: current()})
+			return
+		}
+		if err := h.svc.SetThreshold(float32(v)); err != nil {
+			h.renderTemplate(w, "settings.html", uiPageData{Result: "Threshold update failed: " + err.Error(), Class: "error", Threshold: current()})
+			return
+		}
+		h.renderTemplate(w, "settings.html", uiPageData{Result: "Threshold updated", Class: "", Threshold: float32(v)})
+		return
+	}
+
+	st, err := h.svc.GetSettings()
+	if err != nil {
+		h.renderTemplate(w, "settings.html", uiPageData{Result: "Failed to load settings", Class: "error"})
+		return
+	}
+	h.renderTemplate(w, "settings.html", uiPageData{Threshold: st.Threshold})
 }
 
 // --- Utility ---

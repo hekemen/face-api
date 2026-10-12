@@ -1,0 +1,24 @@
+{{template "head" .}}
+{{template "subpageHeader" .}}
+<a href="./" class="back-link">← Dashboard</a>
+<div class="result {{.Class}}">{{.Result}}</div>
+<h2>Settings</h2>
+<p>
+  <strong>Match sensitivity</strong> controls how strictly the server matches faces.
+  Recognition compares the face in a photo against every enrolled face using
+  <em>cosine similarity</em> — a value between 0 and 1, where 1 is a perfect match.
+  A face is considered a match when its best similarity score is at or above the
+  threshold below.
+</p>
+<p style="color: var(--pico-muted-color); font-size: 0.9rem;">
+  A <strong>lower</strong> threshold is more lenient: more matches, but a higher chance of
+  false positives. A <strong>higher</strong> threshold is stricter: fewer matches, but fewer
+  false positives. The default is 0.45.
+</p>
+<form action="settings" method="post" style="max-width: 24rem;">
+  <label for="threshold">Match sensitivity (similarity threshold)</label>
+  <input type="number" id="threshold" name="threshold" step="0.01" min="0.01" max="0.99" value="{{.Threshold}}" required>
+  <button type="submit">Save</button>
+</form>
+{{template "foot" .}}
+{{template "clockScript" .}}

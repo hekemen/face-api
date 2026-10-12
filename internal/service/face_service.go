@@ -18,6 +18,7 @@ type FaceServiceImpl struct {
 	audit      domain.AuditRepository
 	processor  domain.FaceProcessor
 	rtspReader domain.RTSPReader
+	settings   domain.SettingsRepository
 	threshold  float32
 	logger     *zerolog.Logger
 	mu         sync.Mutex
@@ -38,6 +39,41 @@ func New(users domain.UserRepository, audit domain.AuditRepository,
 func (s *FaceServiceImpl) WithLogger(l *zerolog.Logger) *FaceServiceImpl {
 	s.logger = l
 	return s
+}
+
+// WithSettingsRepo sets the settings repository and applies any persisted
+// threshold override (a valid stored value wins over the constructor value).
+func (s *FaceServiceImpl) WithSettingsRepo(repo domain.SettingsRepository) *FaceServiceImpl {
+	s.settings = repo
+	if st, err := repo.Get(); err == nil && st != nil && st.Threshold > 0 && st.Threshold < 1 {
+		s.threshold = st.Threshold
+	}
+	return s
+}
+
+// GetSettings returns the current runtime settings (live values).
+func (s *FaceServiceImpl) GetSettings() (*domain.Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &domain.Settings{Threshold: s.threshold}, nil
+}
+
+// SetThreshold updates the face-match threshold. The value must be in (0, 1).
+// It is persisted before the in-memory value is updated.
+func (s *FaceServiceImpl) SetThreshold(v float32) error {
+	if v <= 0 || v >= 1 {
+		return fmt.Errorf("threshold must be between 0 and 1")
+	}
+	if s.settings == nil {
+		return fmt.Errorf("settings repository not configured")
+	}
+	if err := s.settings.Save(&domain.Settings{Threshold: v}); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.threshold = v
+	s.mu.Unlock()
+	return nil
 }
 
 // logf writes a structured log line if the logger is set.
