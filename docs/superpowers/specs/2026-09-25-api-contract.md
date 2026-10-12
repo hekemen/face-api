@@ -46,7 +46,7 @@ Enroll a face from an image upload.
 - **Fields**:
   - `name` (required): User name (string)
   - `image` (required): Image file (JPEG/PNG)
-- **Max pictures**: 3 per user. The 4th enrollment for the same name returns 400.
+- **Max pictures**: 5 per user. The 6th enrollment for the same name returns 400.
 
 **Success (201):**
 ```json
@@ -67,7 +67,7 @@ Enroll a face from an image upload.
 **Error (400):**
 ```json
 {
-  "error": "Maximum 3 pictures per user reached"
+  "error": "Maximum 5 pictures per user reached"
 }
 ```
 

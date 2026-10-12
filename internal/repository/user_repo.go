@@ -142,8 +142,9 @@ func (r *UserRepository) ListAll() ([]*domain.User, error) {
 }
 
 // BackfillUsersFromAudit scans the Audit bucket for ENROLL entries and
-// recovers up to 3 face JPEGs plus the latest enrollment time for users
-// whose stored value predates the picture feature (or has empty pictures).
+// recovers up to MaxPicturesPerUser face JPEGs plus the latest enrollment
+// time for users whose stored value predates the picture feature (or has
+// empty pictures).
 // It returns the number of users that were backfilled.
 func (r *UserRepository) BackfillUsersFromAudit() (int, error) {
 	var backfilled int
@@ -180,7 +181,7 @@ func (r *UserRepository) BackfillUsersFromAudit() (int, error) {
 			})
 		}
 
-		// Group by name, keep up to 3 pictures and the latest time.
+		// Group by name, keep up to MaxPicturesPerUser pictures and the latest time.
 		type backfillData struct {
 			Pictures []string
 			Latest   string
@@ -192,7 +193,7 @@ func (r *UserRepository) BackfillUsersFromAudit() (int, error) {
 				d = &backfillData{}
 				grouped[e.Name] = d
 			}
-			if len(d.Pictures) < 3 {
+			if len(d.Pictures) < domain.MaxPicturesPerUser {
 				d.Pictures = append(d.Pictures, e.FaceImage)
 			}
 			if e.Time > d.Latest {

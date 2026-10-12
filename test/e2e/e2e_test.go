@@ -268,12 +268,22 @@ func TestEnrollMultiplePictures_E2E(t *testing.T) {
 		t.Fatalf("third enroll: expected 201, got %d", code)
 	}
 
-	t.Log("=== Step 4: Fourth enroll must be rejected (max 3) ===")
-	if code := enrollTo(baseURL, "multi", "test_hopkins_2.jpg"); code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for 4th picture, got %d", code)
+	t.Log("=== Step 3b: Appending image 2 again (4 pictures total) ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_2.jpg"); code != http.StatusCreated {
+		t.Fatalf("fourth enroll: expected 201, got %d", code)
 	}
 
-	t.Log("=== Step 4b: /users reports all 3 pictures for 'multi' ===")
+	t.Log("=== Step 3c: Appending image 1 again (5 pictures total) ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_1.jpg"); code != http.StatusCreated {
+		t.Fatalf("fifth enroll: expected 201, got %d", code)
+	}
+
+	t.Log("=== Step 4: Sixth enroll must be rejected (max 5) ===")
+	if code := enrollTo(baseURL, "multi", "test_hopkins_2.jpg"); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for 6th picture, got %d", code)
+	}
+
+	t.Log("=== Step 4b: /users reports all 5 pictures for 'multi' ===")
 	usersResp2, err := http.Get(baseURL + "/users")
 	if err != nil {
 		t.Fatalf("users request failed: %v", err)
@@ -290,14 +300,14 @@ func TestEnrollMultiplePictures_E2E(t *testing.T) {
 	}
 	for _, u := range usersResp2Body.Users {
 		if u.Name == "multi" {
-			if len(u.Pictures) != 3 {
-				t.Fatalf("expected 'multi' to have 3 pictures via /users, got %d", len(u.Pictures))
+			if len(u.Pictures) != 5 {
+				t.Fatalf("expected 'multi' to have 5 pictures via /users, got %d", len(u.Pictures))
 			}
 			break
 		}
 	}
 
-	t.Log("=== Step 5: Recognizing with image 2 (multi now has 3 embeddings) ===")
+	t.Log("=== Step 5: Recognizing with image 2 (multi now has 5 embeddings) ===")
 	recognizeBuf, recognizeContentType := multipartBody("image", "test_hopkins_2.jpg")
 	recognizeReq, err := http.NewRequest(http.MethodPost, baseURL+"/recognize", recognizeBuf)
 	if err != nil {
@@ -323,7 +333,7 @@ func TestEnrollMultiplePictures_E2E(t *testing.T) {
 	if result.DurationMs <= 0 {
 		t.Errorf("expected duration_ms > 0, got %d", result.DurationMs)
 	}
-	t.Log("=== PASS: multi-picture enroll + 3 max cap verified ===")
+	t.Log("=== PASS: multi-picture enroll + 5 max cap verified ===")
 }
 
 func enrollTo(bURL, name, imagePath string) int {

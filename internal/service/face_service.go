@@ -12,8 +12,6 @@ import (
 	"h2hsecure.com/face/internal/domain"
 )
 
-const maxPicturesPerUser = 3
-
 // FaceServiceImpl implements domain.FaceService using repositories and a face processor.
 type FaceServiceImpl struct {
 	users      domain.UserRepository
@@ -108,8 +106,8 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 	if err != nil && err.Error() != fmt.Sprintf("user %q not found", name) {
 		return err
 	}
-	if u != nil && len(u.Embeddings) >= maxPicturesPerUser {
-		return fmt.Errorf("maximum %d pictures per user", maxPicturesPerUser)
+	if u != nil && len(u.Embeddings) >= domain.MaxPicturesPerUser {
+		return fmt.Errorf("maximum %d pictures per user", domain.MaxPicturesPerUser)
 	}
 
 	embeddings := []domain.FaceEmbedding{}
@@ -370,9 +368,9 @@ func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error 
 
 	if u != nil {
 		// User exists, append to them
-		if len(u.Embeddings) >= maxPicturesPerUser {
+		if len(u.Embeddings) >= domain.MaxPicturesPerUser {
 			s.logf("promote: max pictures reached", "name", name, "pictures", len(u.Embeddings))
-			return fmt.Errorf("maximum %d pictures per user", maxPicturesPerUser)
+			return fmt.Errorf("maximum %d pictures per user", domain.MaxPicturesPerUser)
 		}
 		u.Embeddings = append(u.Embeddings, entry.Embedding)
 		u.Pictures = append(u.Pictures, entry.FaceImage)

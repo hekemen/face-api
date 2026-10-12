@@ -8,11 +8,15 @@ import (
 // FaceEmbedding is a normalized face embedding vector (typically 512-dim).
 type FaceEmbedding []float32
 
+// MaxPicturesPerUser is the maximum number of enrolled face pictures
+// (and their parallel embeddings) a single user may hold.
+const MaxPicturesPerUser = 5
+
 // User represents an enrolled identity with one or more face embeddings.
 type User struct {
 	Name       string
 	Embeddings []FaceEmbedding
-	Pictures   []string // base64-encoded cropped face JPEGs (up to 3)
+	Pictures   []string // base64-encoded cropped face JPEGs (up to MaxPicturesPerUser)
 	UpdatedAt  time.Time
 }
 

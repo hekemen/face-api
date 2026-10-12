@@ -564,8 +564,8 @@ func TestPromoteFromAuditExceedsLimit(t *testing.T) {
 		users: []*domain.User{
 			{
 				Name:       "alice",
-				Embeddings: []domain.FaceEmbedding{{1, 1, 1}, {2, 2, 2}, {3, 3, 3}},
-				Pictures:   []string{"p1", "p2", "p3"},
+				Embeddings: []domain.FaceEmbedding{{1, 1, 1}, {2, 2, 2}, {3, 3, 3}, {4, 4, 4}, {5, 5, 5}},
+				Pictures:   []string{"p1", "p2", "p3", "p4", "p5"},
 				UpdatedAt:  time.Now().Add(-time.Hour),
 			},
 		},
@@ -592,7 +592,7 @@ func TestPromoteFromAuditExceedsLimit(t *testing.T) {
 	err := svc.PromoteFromAudit(auditTime, "alice")
 	if err == nil {
 		t.Error("expected error due to max pictures limit, got nil")
-	} else if !strings.Contains(err.Error(), "maximum 3 pictures per user") {
+	} else if !strings.Contains(err.Error(), "maximum 5 pictures per user") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
