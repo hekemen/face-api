@@ -10,6 +10,13 @@ lib/
 .env
 faces.db
 
+# Local-only sensitive docs — contain private network details (hostnames,
+# IPs, SSH access, cluster topology). Never push these.
+AGENTS.md
+deploy/helm/face-api/values.pi.yaml
+docs/superpowers/specs/2026-09-25-deployment.md
+playwright_test/test_promote.js
+
 # Test / load-test artifacts
 *.jpg
 *.png
