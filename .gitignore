@@ -15,6 +15,7 @@ faces.db
 AGENTS.md
 deploy/helm/face-api/values.pi.yaml
 docs/superpowers/specs/2026-09-25-deployment.md
+docs/superpowers/plans/2026-09-17-mqtt-integration.md
 playwright_test/test_promote.js
 
 # Test / load-test artifacts
