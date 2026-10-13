@@ -158,9 +158,14 @@ func TestAuditPageNoFaceFrameModal(t *testing.T) {
 
 // TestAuditPageEnrollButtonInFaceModal verifies the audit page's
 // enroll/update action lives inside the face-image popup rather than as a
-// per-row button, and that the popup's close/cancel buttons are visible
-// (explicit text color on a transparent background; Pico's default button
-// text color is white, which was invisible on the white modal card).
+// per-row button, and that the popup's close/cancel buttons are visible.
+//
+// The visibility fix must use --pico-muted-color, NOT --pico-color: Pico's
+// button rule sets --pico-color: var(--pico-primary-inverse) (white) on the
+// button element itself, so an inline color:var(--pico-color) resolves the
+// button-local override and stays white — invisible on the white modal card.
+// --pico-muted-color is not overridden on buttons and is visible in both
+// themes (#646b79 light / #7b8495 dark).
 func TestAuditPageEnrollButtonInFaceModal(t *testing.T) {
 	svc := &fakeFaceService{}
 	h := NewUIHandler(svc, true, "")
@@ -189,13 +194,18 @@ func TestAuditPageEnrollButtonInFaceModal(t *testing.T) {
 	if strings.Contains(body, "✕") {
 		t.Errorf("audit page must not use the ✕ glyph (renders invisible against Pico's white button text color)")
 	}
-	closeBtn := `border-radius:4px;color:var(--pico-color);font-size:1rem;line-height:1;" title="Close"`
+	closeBtn := `border-radius:4px;color:var(--pico-muted-color);font-size:1rem;line-height:1;" title="Close"`
 	if strings.Count(body, closeBtn) != 2 {
-		t.Errorf("both modal close buttons must set color:var(--pico-color), got %d occurrences", strings.Count(body, closeBtn))
+		t.Errorf("both modal close buttons must set color:var(--pico-muted-color), got %d occurrences", strings.Count(body, closeBtn))
 	}
 	// Cancel button must also carry an explicit text color
-	if !strings.Contains(body, `id="promoteCancelBtn"`) || !strings.Contains(body, `color:var(--pico-color);">Cancel`) {
-		t.Errorf("audit page promote modal Cancel button must set color:var(--pico-color)")
+	if !strings.Contains(body, `id="promoteCancelBtn"`) || !strings.Contains(body, `color:var(--pico-muted-color);">Cancel`) {
+		t.Errorf("audit page promote modal Cancel button must set color:var(--pico-muted-color)")
+	}
+	// Regression guard: --pico-color is overridden to white on <button> by
+	// Pico's button rule, so it must not be used for the popup button text.
+	if strings.Contains(body, `color:var(--pico-color)`) {
+		t.Errorf("audit page popup buttons must not use color:var(--pico-color) (Pico overrides --pico-color to white on buttons, making the text invisible)")
 	}
 	// Shared backdrop must stay visible while either modal is open
 	if !strings.Contains(body, "faceModalOpen || promoteModalOpen") {
