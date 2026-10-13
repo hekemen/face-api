@@ -156,6 +156,53 @@ func TestAuditPageNoFaceFrameModal(t *testing.T) {
 	}
 }
 
+// TestAuditPageEnrollButtonInFaceModal verifies the audit page's
+// enroll/update action lives inside the face-image popup rather than as a
+// per-row button, and that the popup's close/cancel buttons are visible
+// (explicit text color on a transparent background; Pico's default button
+// text color is white, which was invisible on the white modal card).
+func TestAuditPageEnrollButtonInFaceModal(t *testing.T) {
+	svc := &fakeFaceService{}
+	h := NewUIHandler(svc, true, "")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/ui/audit", nil)
+	h.handleUIAudit(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+
+	// Enroll/update button inside the face-image popup
+	if !strings.Contains(body, `id="faceModalEnrollBtn"`) {
+		t.Errorf("audit page face modal must contain the enroll/update button (faceModalEnrollBtn)")
+	}
+	// No per-row enroll button
+	if strings.Contains(body, "enroll-btn") {
+		t.Errorf("audit page rows must not render a per-row enroll button (enroll-btn)")
+	}
+	// Close buttons: visible text color + multiplication-sign glyph
+	if !strings.Contains(body, `title="Close">×</button>`) {
+		t.Errorf("audit page modal close buttons must use the × glyph")
+	}
+	if strings.Contains(body, "✕") {
+		t.Errorf("audit page must not use the ✕ glyph (renders invisible against Pico's white button text color)")
+	}
+	closeBtn := `border-radius:4px;color:var(--pico-color);font-size:1rem;line-height:1;" title="Close"`
+	if strings.Count(body, closeBtn) != 2 {
+		t.Errorf("both modal close buttons must set color:var(--pico-color), got %d occurrences", strings.Count(body, closeBtn))
+	}
+	// Cancel button must also carry an explicit text color
+	if !strings.Contains(body, `id="promoteCancelBtn"`) || !strings.Contains(body, `color:var(--pico-color);">Cancel`) {
+		t.Errorf("audit page promote modal Cancel button must set color:var(--pico-color)")
+	}
+	// Shared backdrop must stay visible while either modal is open
+	if !strings.Contains(body, "faceModalOpen || promoteModalOpen") {
+		t.Errorf("audit page backdrop must track both modal states (faceModalOpen || promoteModalOpen)")
+	}
+}
+
 // TestEnrollPageFormHiddenByDefault verifies the enroll page ships with the
 // "add new user" form collapsed behind a toggle button (hidden by default on
 // every load; no state persistence).

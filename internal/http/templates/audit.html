@@ -22,17 +22,18 @@
 <div id="faceModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1001;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
     <strong id="faceModalTitle">Face Image</strong>
-    <button onclick="closeFaceModal()" style="padding:0.2rem 0.5rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">✕</button>
+    <button onclick="closeFaceModal()" style="width:2rem;height:2rem;flex-shrink:0;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;color:var(--pico-color);font-size:1rem;line-height:1;" title="Close">×</button>
   </div>
   <img id="faceModalImage" src="" style="width:100%;border-radius:4px;" onerror="this.removeAttribute('src');this.alt='Failed to load image';" />
   <p id="faceModalFallback" style="display:none;color:var(--pico-muted-color);font-size:0.85rem;">No image available for this entry.</p>
+  <button id="faceModalEnrollBtn" style="display:none;width:100%;margin-top:0.75rem;padding:0.5rem 1rem;cursor:pointer;border:1px solid var(--pico-primary);border-radius:4px;background:var(--pico-primary);color:var(--pico-primary-inverse);font-size:0.9rem;"></button>
 </div>
 
 <!-- Promote modal -->
 <div id="promoteModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1002;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1.25rem;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
     <strong>Enroll / Update User</strong>
-    <button id="promoteModalClose" onclick="closePromoteModal()" style="padding:0.2rem 0.5rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">✕</button>
+    <button id="promoteModalClose" onclick="closePromoteModal()" style="width:2rem;height:2rem;flex-shrink:0;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;color:var(--pico-color);font-size:1rem;line-height:1;" title="Close">×</button>
   </div>
   <img id="promoteThumb" src="" class="face-thumb" style="width:80px;height:80px;flex-shrink:0;display:block;margin-bottom:0.75rem;border-radius:4px;" />
   <select id="promoteUserSelect" style="width:100%;padding:0.5rem;font-size:0.9rem;margin-bottom:0.5rem;">
@@ -40,7 +41,7 @@
   </select>
   <input type="text" id="promoteName" placeholder="Enter name..." style="width:100%;padding:0.5rem;font-size:0.9rem;display:none;margin-bottom:0.75rem;" />
   <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
-    <button id="promoteCancelBtn" onclick="closePromoteModal()" style="padding:0.5rem 1rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;">Cancel</button>
+    <button id="promoteCancelBtn" onclick="closePromoteModal()" style="padding:0.5rem 1rem;cursor:pointer;background:transparent;border:1px solid var(--pico-muted-border-color);border-radius:4px;color:var(--pico-color);">Cancel</button>
     <button id="promoteBtn" style="padding:0.5rem 1rem;cursor:pointer;">Enroll/Update</button>
   </div>
   <span id="promoteStatus" style="display:block;margin-top:0.5rem;font-size:0.85rem;"></span>
@@ -58,6 +59,14 @@
   var state = { page: 1, perPage: 20, user: '', status: '' };
   var selectedEntry = null;
   var filterNames = [];
+  var faceModalEntry = null;
+  var faceModalOpen = false;
+  var promoteModalOpen = false;
+
+  // The backdrop is shared by both modals; keep it visible while any is open.
+  function updateBackdrop() {
+    document.getElementById('modalBackdrop').style.display = (faceModalOpen || promoteModalOpen) ? 'block' : 'none';
+  }
 
   // Error handler for the entire script
   window.addEventListener('error', function(e) {
@@ -83,30 +92,6 @@
     }
   }
 
-  // Load face image and open modal on click.
-  function loadAndOpenFaceModal(timestamp, imgEl) {
-    // Already loaded? Just open modal.
-    if (imgEl.dataset.loaded === '1') {
-      openFaceModal(timestamp);
-      return;
-    }
-    imgEl.dataset.loaded = '1';
-    fetch('../api/audit/face?id=' + encodeURIComponent(timestamp))
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.face_image) {
-          imgEl.src = 'data:image/jpeg;base64,' + data.face_image;
-          // Open modal once image is loaded
-          openFaceModal(timestamp);
-        } else {
-          imgEl.style.display = 'none';
-        }
-      })
-      .catch(function() {
-        imgEl.style.display = 'none';
-      });
-  }
-
   function renderEntry(entry) {
     var thumbId = 'thumb-' + entry.time.replace(/[:.]/g, '-');
     var img;
@@ -122,12 +107,9 @@
     var similarity = entry.similarity != null ? entry.similarity.toFixed(3) : '—';
     var selectedClass = (selectedEntry && selectedEntry.time === entry.time) ? ' selected-entry' : '';
 
-    // Enroll button: only for entries that have a face AND are not yet matched
-    var enrollBtn = '';
-    if (entry.has_face && !entry.matched) {
-      var btnLabel = entry.name ? 'Update User' : 'Enroll User';
-      enrollBtn = '<button class="enroll-btn" data-time="' + entry.time + '" style="padding:0.3rem 0.6rem;cursor:pointer;border:1px solid var(--pico-primary);border-radius:4px;background:var(--pico-primary-background-color);color:var(--pico-primary);font-size:0.8rem;white-space:nowrap;flex-shrink:0;" title="Enroll or update this user">⬇ ' + btnLabel + '</button>';
-    }
+    // No per-row enroll button: the enroll/update action lives inside the
+    // face-image popup (see faceModalEnrollBtn), which avoids repeating the
+    // button on every row.
 
     return '<div class="entry' + selectedClass + '" style="display:flex;gap:0.75rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">' +
       img +
@@ -139,7 +121,6 @@
         statusBadge(entry.status) +
         '<div style="font-size:0.8rem;color:var(--pico-muted-color);">similarity: ' + similarity + '</div>' +
       '</div>' +
-      enrollBtn +
     '</div>';
   }
 
@@ -149,21 +130,29 @@
     closePromoteModal();
   };
 
-  function openFaceModal(timestamp, status) {
-    var backdrop = document.getElementById('modalBackdrop');
+  function openFaceModal(entry) {
+    faceModalEntry = entry;
     var modal = document.getElementById('faceModal');
     var img = document.getElementById('faceModalImage');
     var fallback = document.getElementById('faceModalFallback');
+    var enrollBtn = document.getElementById('faceModalEnrollBtn');
     img.src = '';
     img.style.display = 'block';
     fallback.style.display = 'none';
-    var title = 'Face — ' + timestamp;
-    if (status === 'no_face') {
-      title = 'Original frame — ' + timestamp;
+    var title = 'Face — ' + entry.time;
+    if (entry.status === 'no_face') {
+      title = 'Original frame — ' + entry.time;
     }
     document.getElementById('faceModalTitle').textContent = title;
+    // Enroll/update button only for unmatched entries that have a face
+    if (entry.has_face && !entry.matched) {
+      enrollBtn.textContent = '⬇ ' + (entry.name ? 'Update User' : 'Enroll User');
+      enrollBtn.style.display = 'block';
+    } else {
+      enrollBtn.style.display = 'none';
+    }
     // Load the image
-    fetch('../api/audit/face?id=' + encodeURIComponent(timestamp))
+    fetch('../api/audit/face?id=' + encodeURIComponent(entry.time))
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.face_image) {
@@ -177,25 +166,28 @@
         img.style.display = 'none';
         fallback.style.display = 'block';
       });
-    backdrop.style.display = 'block';
+    faceModalOpen = true;
+    updateBackdrop();
     modal.style.display = 'block';
   }
 
   window.closeFaceModal = function() {
-    document.getElementById('modalBackdrop').style.display = 'none';
+    faceModalOpen = false;
+    faceModalEntry = null;
+    updateBackdrop();
     document.getElementById('faceModal').style.display = 'none';
     document.getElementById('faceModalImage').src = '';
   };
 
   function openPromoteModal(entry) {
     selectedEntry = entry;
-    var backdrop = document.getElementById('modalBackdrop');
     var modal = document.getElementById('promoteModal');
     document.getElementById('promoteThumb').src = '';
     document.getElementById('promoteStatus').textContent = '';
     document.getElementById('promoteBtn').textContent = 'Enroll/Update';
     document.getElementById('promoteBtn').disabled = false;
-    backdrop.style.display = 'block';
+    promoteModalOpen = true;
+    updateBackdrop();
     modal.style.display = 'block';
 
     var promoteNameInput = document.getElementById('promoteName');
@@ -228,27 +220,28 @@
     }
 
     promoteUserSelect.focus();
-    // Load the face image
-    loadAndOpenFaceModal(entry.time, document.getElementById('promoteThumb'));
+    // Load the face image for the popup thumbnail
+    var thumb = document.getElementById('promoteThumb');
+    fetch('../api/audit/face?id=' + encodeURIComponent(entry.time))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.face_image) {
+          thumb.src = 'data:image/jpeg;base64,' + data.face_image;
+        } else {
+          thumb.style.display = 'none';
+        }
+      })
+      .catch(function() { thumb.style.display = 'none'; });
   }
 
   window.closePromoteModal = function() {
     selectedEntry = null;
-    document.getElementById('modalBackdrop').style.display = 'none';
+    promoteModalOpen = false;
+    updateBackdrop();
     document.getElementById('promoteModal').style.display = 'none';
     document.getElementById('promoteThumb').src = '';
     render();
   };
-
-  function selectEntry(entry) {
-    if (selectedEntry && selectedEntry.time === entry.time) {
-      // Deselect if already selected
-      selectedEntry = null;
-      render();
-      return;
-    }
-    openPromoteModal(entry);
-  }
 
   function populateDropdowns(names) {
     var sel = document.getElementById('filterUser');
@@ -355,21 +348,7 @@
           thumb.addEventListener('click', function() {
             var id = this.getAttribute('data-id');
             var entry = data.entries.find(function(e) { return e.time === id; });
-            if (entry && entry.has_face) {
-              loadAndOpenFaceModal(id, this);
-            } else if (entry && !entry.has_face) {
-              // No-face entry: open modal directly to load the original frame
-              openFaceModal(id, entry.status);
-            }
-          });
-        });
-
-        // Bind click handlers for enroll buttons (opens promote modal)
-        content.querySelectorAll('.enroll-btn').forEach(function(btn) {
-          btn.addEventListener('click', function() {
-            var id = this.getAttribute('data-time');
-            var entry = data.entries.find(function(e) { return e.time === id; });
-            if (entry) selectEntry(entry);
+            if (entry) openFaceModal(entry);
           });
         });
 
@@ -412,6 +391,11 @@
     document.getElementById('filterUser').value = '';
     document.getElementById('filterStatus').value = '';
     render();
+  });
+
+  // Enroll/update button inside the face-image popup opens the promote modal
+  document.getElementById('faceModalEnrollBtn').addEventListener('click', function() {
+    if (faceModalEntry) openPromoteModal(faceModalEntry);
   });
 
   // Promote bar events
