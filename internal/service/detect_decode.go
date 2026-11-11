@@ -93,12 +93,41 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 			y2 := cy + level.Boxes[i*4+3]*stride
 
 			best.Score = conf
-			best.Box = [4]float32{
-				float32(int(math.Round(float64(clampToFrame(x1, scale, frameW))))),
-				float32(int(math.Round(float64(clampToFrame(y1, scale, frameH))))),
-				float32(int(math.Round(float64(clampToFrame(x2, scale, frameW))))),
-				float32(int(math.Round(float64(clampToFrame(y2, scale, frameH))))),
+			// Reproduce the original production crop math exactly: round the
+			// exact float64 canvas→frame quotient, then clamp to the frame as
+			// integers. Using mapToFrame here would narrow the quotient to
+			// float32 first and can flip a rare rounding edge (≈0.004 % of
+			// canvas coords at 1920×1080), which would silently shift the
+			// crop by 1 px and change the embedding.
+			bestX1 := int(math.Round(float64(x1) / scale))
+			if bestX1 < 0 {
+				bestX1 = 0
 			}
+			if bestX1 > w {
+				bestX1 = w
+			}
+			bestY1 := int(math.Round(float64(y1) / scale))
+			if bestY1 < 0 {
+				bestY1 = 0
+			}
+			if bestY1 > h {
+				bestY1 = h
+			}
+			bestX2 := int(math.Round(float64(x2) / scale))
+			if bestX2 < 0 {
+				bestX2 = 0
+			}
+			if bestX2 > w {
+				bestX2 = w
+			}
+			bestY2 := int(math.Round(float64(y2) / scale))
+			if bestY2 < 0 {
+				bestY2 = 0
+			}
+			if bestY2 > h {
+				bestY2 = h
+			}
+			best.Box = [4]float32{float32(bestX1), float32(bestY1), float32(bestX2), float32(bestY2)}
 
 			best.HasKPs = false
 			if len(level.KPs) > 0 {
