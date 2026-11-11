@@ -400,6 +400,50 @@ func TestScanBurstRetriesAfterGrabFailure(t *testing.T) {
 	}
 }
 
+func TestScanBurstGrabsFullResolutionFrame(t *testing.T) {
+	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	crop := &domain.FaceCrop{Embedding: aliceEmb}
+	proc := &burstProcessor{crop: crop}
+	// A 5 MP frame, like the camera's main stream.
+	grabber := &burstGrabber{w: 2560, h: 1920}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+
+	var gotW, gotH, gotPixLen int
+	rec := &recordingProcessor{
+		onFrame: func(w, h int, pix []byte) {
+			gotW, gotH, gotPixLen = w, h, len(pix)
+		},
+	}
+	rec.crop = crop
+	s.processor = rec
+
+	if _, err := s.ScanBurst(context.Background()); err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if gotW != 2560 || gotH != 1920 {
+		t.Errorf("processor got %dx%d, want 2560x1920 (the grab must not downscale)", gotW, gotH)
+	}
+	if gotPixLen != 2560*1920*3 {
+		t.Errorf("processor got %d pixels, want %d", gotPixLen, 2560*1920*3)
+	}
+}
+
+// recordingProcessor captures the frame dimensions handed to the pipeline.
+type recordingProcessor struct {
+	burstProcessor
+	onFrame func(w, h int, pix []byte)
+}
+
+func (r *recordingProcessor) DetectAndCropFrame(w, h int, pix []byte) (*domain.FaceCrop, error) {
+	if r.onFrame != nil {
+		r.onFrame(w, h, pix)
+	}
+	return r.burstProcessor.DetectAndCropFrame(w, h, pix)
+}
+
 func TestScanBurstCancel(t *testing.T) {
 	emb := domain.FaceEmbedding{1, 0, 0, 0}
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
