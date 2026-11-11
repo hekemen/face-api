@@ -48,7 +48,7 @@ func TestProcessorReusesTensorsAndCloses(t *testing.T) {
 	defer detS.Close()
 	defer recS.Close()
 
-	p, err := NewFaceProcessor(rt, env, detS, recS)
+	p, err := NewFaceProcessor(rt, env, detS, recS, AlignmentBBox)
 	if err != nil {
 		t.Fatalf("NewFaceProcessor: %v", err)
 	}

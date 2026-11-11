@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"math"
 	"sync"
 
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 
+	"h2hsecure.com/face/internal/config"
 	"h2hsecure.com/face/internal/domain"
 	"h2hsecure.com/face/internal/imaging"
 )
@@ -49,7 +49,8 @@ type FaceProcessorImpl struct {
 	env        *ort.Env
 	detS       *ort.Session
 	recS       *ort.Session
-	pipelineMu sync.Mutex // guards scratch + both sessions
+	align      AlignmentMode // crop strategy: bbox (default) or arcface5
+	pipelineMu sync.Mutex    // guards scratch + both sessions
 
 	canvas  *imaging.RGBImage // 640×640×3 detection canvas (top-left pad target)
 	detBlob []float32         // 3×640×640 detection input blob
@@ -59,15 +60,37 @@ type FaceProcessorImpl struct {
 	recTens *ort.Value        // wraps recBlob; created once, reused every recognition Run
 }
 
+// AlignmentMode selects the face-crop alignment strategy. Bbox (the default)
+// reproduces today's embeddings exactly; arcface5 is opt-in and requires
+// re-enrollment because it produces a different embedding space.
+type AlignmentMode string
+
+const (
+	AlignmentBBox     AlignmentMode = "bbox"     // raw bounding-box crop + resize (default)
+	AlignmentArcFace5 AlignmentMode = "arcface5" // 5-point similarity warp to the ArcFace template
+)
+
+// ParseAlignment parses the FACE_ALIGNMENT env value, delegating to
+// config.Alignment (the single source of truth for that validation).
+func ParseAlignment(raw string) (AlignmentMode, error) {
+	s, err := config.Alignment(func(string) string { return raw })
+	if err != nil {
+		return "", err
+	}
+	return AlignmentMode(s), nil
+}
+
 // NewFaceProcessor creates a new ONNX-based face processor, eagerly
 // allocating one canvas, one blob and one input tensor per session. The
-// tensors wrap the Go slices zero-copy and are reused on every Run.
-func NewFaceProcessor(rt *ort.Runtime, env *ort.Env, detS, recS *ort.Session) (*FaceProcessorImpl, error) {
+// tensors wrap the Go slices zero-copy and are reused on every Run. The align
+// argument selects the crop strategy; it is stored and used by alignCrop.
+func NewFaceProcessor(rt *ort.Runtime, env *ort.Env, detS, recS *ort.Session, align AlignmentMode) (*FaceProcessorImpl, error) {
 	p := &FaceProcessorImpl{
 		rt:      rt,
 		env:     env,
 		detS:    detS,
 		recS:    recS,
+		align:   align,
 		canvas:  imaging.NewRGB(detInputSize, detInputSize),
 		crop:    imaging.NewRGB(recInputSize, recInputSize),
 		detBlob: make([]float32, 3*detInputSize*detInputSize),
@@ -132,17 +155,12 @@ func (p *FaceProcessorImpl) DetectAndCropFrame(w, h int, pix []byte) (*domain.Fa
 		return nil, err
 	}
 
-	// Crop the winning box into the preallocated 112×112 recognition target.
-	// p.crop is reused across frames; CropInto overwrites every pixel of the
-	// target, so no stale data survives between calls.
-	if err := imaging.CropInto(p.crop, img, image.Rect(
-		int(math.Round(float64(hit.Box[0]))),
-		int(math.Round(float64(hit.Box[1]))),
-		int(math.Round(float64(hit.Box[2]))),
-		int(math.Round(float64(hit.Box[3]))),
-	)); err != nil {
-		return nil, fmt.Errorf("crop face region: %w", err)
-	}
+	// Align + crop the winning box into the preallocated 112×112 recognition
+	// target. p.crop is reused across frames; alignCrop overwrites every pixel
+	// of it, so no stale data survives between calls. Bbox mode (default) is
+	// byte-identical to the pre-Task-8 pipeline; arcface5 is opt-in and kept
+	// out of the stored pictures path.
+	p.alignCrop(p.crop, img, hit)
 
 	// Encode crop to JPEG.
 	encoded, err := imaging.EncodeJPEG(p.crop)
@@ -211,6 +229,36 @@ func (p *FaceProcessorImpl) detectAndCrop112(img *imaging.RGBImage) (*faceHit, e
 		return nil, err
 	}
 	return hit, nil
+}
+
+// alignCrop writes the aligned face into dst (preallocated 112×112) and
+// reports whether the arcface5 warp was used. Bbox mode (default) and any
+// degenerate-warp case fall through to the bbox crop, so default embeddings
+// stay byte-identical to today's pipeline. Caller must hold pipelineMu.
+func (p *FaceProcessorImpl) alignCrop(dst, img *imaging.RGBImage, hit *faceHit) (usedWarp bool) {
+	if p.align == AlignmentArcFace5 && hit.HasKPs {
+		if imaging.Warp5Into(dst, img, hit.KPs) {
+			return true
+		}
+		// Degenerate transform (collinear / non-finite landmarks) — fall back
+		// to the bbox crop for this frame.
+	}
+
+	// hit.Box holds integral pixel coords (decodeBestFace rounds them), so the
+	// conversion is exact. CropInto resamples the box region straight into the
+	// 112×112 dst — byte-identical to the pre-Task-8 pipeline.
+	box := image.Rect(
+		int(hit.Box[0]),
+		int(hit.Box[1]),
+		int(hit.Box[2]),
+		int(hit.Box[3]),
+	)
+	if err := imaging.CropInto(dst, img, box); err != nil {
+		// CropInto errors only on an empty clip; decodeBestFace already
+		// rejected zero-area boxes, so this is defensive.
+		return false
+	}
+	return false
 }
 
 // runDetect runs SCRFD over the preallocated detection input tensor.

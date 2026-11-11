@@ -54,7 +54,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.Logger.Warn().Err(err).Msg("backfill users from audit failed")
 	}
 
-	processor, err := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession)
+	processor, err := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession, service.AlignmentBBox)
 	if err != nil {
 		return nil, fmt.Errorf("create face processor: %w", err)
 	}
