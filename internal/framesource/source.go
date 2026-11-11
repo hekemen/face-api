@@ -139,12 +139,17 @@ func streamRTSP(ctx context.Context, url string, onFrame func(image.Image)) erro
 
 	proto := gortsplib.ProtocolTCP
 	c := &gortsplib.Client{
-		Scheme:                   u.Scheme,
-		Host:                     u.Host,
-		Protocol:                 &proto,
-		ReadTimeout:              10 * time.Second,
-		WriteTimeout:             10 * time.Second,
-		AnyPortEnable:            true,
+		Scheme:        u.Scheme,
+		Host:          u.Host,
+		Protocol:      &proto,
+		ReadTimeout:   10 * time.Second,
+		WriteTimeout:  10 * time.Second,
+		AnyPortEnable: true,
+		// A long-lived stream decodes continuously, so the UDP receive buffer
+		// must absorb a decode hiccup. The OS default (~200 kB) overflows on a
+		// high-bitrate stream and the lost packets break the H.264 chain
+		// ("buffer length exceeds 64"), which kills the session.
+		UDPReadBufferSize:        4 * 1024 * 1024,
 		DisableRTCPSenderReports: true,
 	}
 	defer c.Close()
