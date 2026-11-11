@@ -17,16 +17,15 @@ import (
 
 // FaceServiceImpl implements domain.FaceService using repositories and a face processor.
 type FaceServiceImpl struct {
-	users       domain.UserRepository
-	audit       domain.AuditRepository
-	processor   domain.FaceProcessor
-	rtspReader  domain.RTSPReader
-	frameSource domain.FrameSource
-	settings    domain.SettingsRepository
-	threshold   float32
-	streamURL   string
-	logger      *zerolog.Logger
-	mu          sync.Mutex
+	users      domain.UserRepository
+	audit      domain.AuditRepository
+	processor  domain.FaceProcessor
+	rtspReader domain.RTSPReader
+	frameGrab  domain.FrameGrabber
+	settings   domain.SettingsRepository
+	threshold  float32
+	logger     *zerolog.Logger
+	mu         sync.Mutex
 	// burst configuration
 	burstWindow         time.Duration
 	burstSampleInterval time.Duration
@@ -107,9 +106,9 @@ func (s *FaceServiceImpl) WithRTSPReader(r domain.RTSPReader) *FaceServiceImpl {
 	return s
 }
 
-// WithFrameSource sets the buffered frame source used by ScanBurst.
-func (s *FaceServiceImpl) WithFrameSource(src domain.FrameSource) *FaceServiceImpl {
-	s.frameSource = src
+// WithFrameGrabber sets the camera frame grabber used by ScanBurst.
+func (s *FaceServiceImpl) WithFrameGrabber(grabber domain.FrameGrabber) *FaceServiceImpl {
+	s.frameGrab = grabber
 	return s
 }
 
@@ -117,13 +116,6 @@ func (s *FaceServiceImpl) WithFrameSource(src domain.FrameSource) *FaceServiceIm
 func (s *FaceServiceImpl) WithBurst(window, sample time.Duration) *FaceServiceImpl {
 	s.burstWindow = window
 	s.burstSampleInterval = sample
-	return s
-}
-
-// WithStreamURL sets the RTSP URL used for the cold-buffer one-shot fallback
-// when the buffer has no fresh frame.
-func (s *FaceServiceImpl) WithStreamURL(url string) *FaceServiceImpl {
-	s.streamURL = url
 	return s
 }
 
@@ -403,14 +395,19 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 
 // --- Stream Check burst scanner ---
 
-// ScanBurst scans the buffered sub-stream frames for up to the burst window,
-// sampling no faster than burstSampleInterval, and returns the first match at
-// or above the threshold. It writes exactly one audit row per burst and keeps
-// the pipeline mutex free between samples so HTTP requests are never blocked
-// for the whole window.
+// ScanBurst grabs camera frames for up to the burst window, matching each
+// against the enrolled users, and returns the first match at or above the
+// threshold. It writes exactly one audit row per burst and keeps the pipeline
+// mutex free between samples so HTTP requests are never blocked for the whole
+// window.
+//
+// Each sample is a fresh grab of a full-resolution frame. A grab waits for the
+// camera's next keyframe, so a burst window fits a couple of samples; taking
+// the best of them beats any single frame because the face may be clearer in
+// one of them.
 func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckResult, error) {
-	if s.frameSource == nil {
-		return nil, fmt.Errorf("frame source not configured")
+	if s.frameGrab == nil {
+		return nil, fmt.Errorf("frame grabber not configured")
 	}
 
 	// Derive a bounded deadline from the burst window so that MQTT Stop() can
@@ -433,8 +430,6 @@ func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckRes
 	start := time.Now()
 	var (
 		w, h             int
-		scratch          []byte
-		lastSeq          uint64
 		lastSample       time.Time
 		bestScore        float32 = -1
 		bestName         string
@@ -442,16 +437,10 @@ func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckRes
 		faceSeen         bool
 		samplesProcessed int
 		firstSample      = true
+		// lastFrame keeps the most recent frame so the no_face audit row can
+		// show what the camera saw.
+		lastFrame []byte
 	)
-	w, h = s.frameSource.Dims()
-	if w > 0 && h > 0 {
-		scratch = make([]byte, w*h*3)
-	}
-
-	// If the buffer has not produced a frame within 3 sample intervals, fall
-	// back to a one-shot check so a cold/down sub-stream does not disable MQTT
-	// scanning.
-	warmup := time.Now().Add(3 * s.burstSampleInterval)
 
 outer:
 	for {
@@ -471,42 +460,27 @@ outer:
 		firstSample = false
 		lastSample = time.Now()
 
-		// Ensure scratch is big enough for the current frame size.
-		cw, ch := s.frameSource.Dims()
-		if cw > 0 && ch > 0 && len(scratch) < cw*ch*3 {
-			scratch = make([]byte, cw*ch*3)
-			w, h = cw, ch
-		}
-
-		// Wait for a frame newer than the last one processed.
-		for {
-			select {
-			case <-ctx.Done():
+		// Grab a fresh full-resolution frame. A failed grab is not a scan
+		// outcome: the camera may be briefly unreachable, so keep trying
+		// until the window closes.
+		gw, gh, pix, err := s.frameGrab.Grab(windowCtx)
+		if err != nil {
+			if ctx.Err() != nil {
 				return s.notOkResult(start, "scan cancelled", 0, nil, false)
-			case <-windowCtx.Done():
+			}
+			if windowCtx.Err() != nil {
 				break outer
-			case <-time.After(20 * time.Millisecond):
 			}
-			w2, h2, seq, _, ok := s.frameSource.Latest(scratch)
-			if !ok {
-				if time.Now().After(warmup) {
-					result, err := s.CheckStream(s.streamURL)
-					if err != nil {
-						return nil, err
-					}
-					return result, nil
-				}
-				continue
-			}
-			if seq == lastSeq {
-				continue
-			}
-			w, h = w2, h2
-			lastSeq = seq
-			break
+			s.logf("burst grab failed", "error", err.Error())
+			continue
 		}
+		if gw <= 0 || gh <= 0 || len(pix) < gw*gh*3 {
+			continue
+		}
+		w, h = gw, gh
+		lastFrame = pix
 
-		crop, err := s.processor.DetectAndCropFrame(w, h, scratch[:w*h*3])
+		crop, err := s.processor.DetectAndCropFrame(w, h, pix)
 		switch {
 		case err == nil:
 			samplesProcessed++
@@ -566,6 +540,16 @@ outer:
 	// Deadline reached. Decide the result from the best sample seen.
 	dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
 	if samplesProcessed == 0 {
+		// No successful inference at all. Either the camera could not be
+		// reached or every frame failed to process; neither is a scan
+		// outcome, so no audit row is written.
+		if lastFrame == nil {
+			return &domain.StreamCheckResult{
+				OperationDuration: dur,
+				Status:            "not ok",
+				Reason:            "Failed to connect to RTSP stream",
+			}, nil
+		}
 		// No successful inference at all: processing failure, not an empty frame.
 		return &domain.StreamCheckResult{
 			OperationDuration: dur,
@@ -604,7 +588,7 @@ outer:
 
 	// No face seen at all, or face seen but no users to match against:
 	// record a no_face entry with a downscaled frame.
-	frameB64 := noFaceFrameFromRGB(w, h, scratch[:w*h*3])
+	frameB64 := noFaceFrameFromRGB(w, h, lastFrame)
 	_ = s.audit.Append([]domain.AuditEntry{{
 		Time:       time.Now(),
 		Endpoint:   "stream-check",

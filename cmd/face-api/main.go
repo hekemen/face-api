@@ -127,7 +127,6 @@ func main() {
 		DetSession:     detSess,
 		RecSession:     recSess,
 		RTSPURL:        os.Getenv("RTSP_URL"),
-		StreamURL:      os.Getenv("RTSP_STREAM_URL"),
 		EnableUI:       enableUI,
 		BasePath:       uiBasePath,
 		Threshold:      threshold,
@@ -147,11 +146,9 @@ func main() {
 	logger.Info().
 		Str("alignment", string(align)).
 		Int("intra_op_threads", threads).
-		Str("rtsp_stream_url", config.RedactURL(os.Getenv("RTSP_STREAM_URL"))).
+		Str("rtsp_url", config.RedactURL(os.Getenv("RTSP_URL"))).
 		Msg("face API wired")
 
-	// Start the buffered frame source (if a sub-stream URL is configured).
-	faceAPI.Start(context.Background())
 	defer faceAPI.Close()
 
 	// 4. Set up MQTT bridge if configured
@@ -175,12 +172,13 @@ func main() {
 			RTSPURL:         os.Getenv("RTSP_URL"),
 		}
 
-		// Select the trigger: buffered burst scan when a sub-stream URL is set,
-		// otherwise the one-shot RTSP check.
+		// Select the trigger: the burst scanner when a camera URL is set
+		// (it grabs full-resolution frames), otherwise the one-shot RTSP
+		// check.
 		var trigger func(context.Context) (*domain.StreamCheckResult, error)
-		if os.Getenv("RTSP_STREAM_URL") != "" {
+		if mqttCfg.RTSPURL != "" {
 			trigger = faceAPI.ScanBurst
-			logger.Info().Msg("MQTT trigger: buffered burst scan")
+			logger.Info().Msg("MQTT trigger: burst scan")
 		} else {
 			trigger = func(ctx context.Context) (*domain.StreamCheckResult, error) {
 				return faceAPI.CheckStream(mqttCfg.RTSPURL)

@@ -62,8 +62,7 @@ Set environment variables via `.env` file or `docker run --env-file`:
 
 | Variable | Description |
 |----------|-------------|
-| `RTSP_URL` | Default RTSP camera URL for stream-check; used when the request omits `rtsp_url` |
-| `RTSP_STREAM_URL` | Sub-stream URL for continuous buffering (MQTT triggers only). Empty = buffer disabled, triggers use one-shot RTSP |
+| `RTSP_URL` | Default RTSP camera URL for stream-check and for MQTT burst scanning; used when the request omits `rtsp_url` |
 | `ONNX_INTRA_OP_THREADS` | ONNX intra-op threads for both sessions (default: `4`, `0` = ONNX default) |
 | `FACE_ALIGNMENT` | Crop alignment: `bbox` (default) or `arcface5` (opt-in, requires re-enrollment) |
 | `TRIGGER_BURST_MS` | Burst window in milliseconds (default: `4000`) |
@@ -81,11 +80,17 @@ Requires [`hey`](https://github.com/rakyll/hey) load testing tool.
 
 ## Live Trigger Scanning
 
-When `RTSP_STREAM_URL` is set, the server continuously decodes the sub-stream
-into an in-memory buffer. MQTT triggers (Home Assistant button press) initiate
-a burst scan for up to `TRIGGER_BURST_MS` (default 4s), sampling no faster than
-`TRIGGER_SAMPLE_MS` (default 200ms), and publish the first match at or above
-the threshold to MQTT immediately.
+MQTT triggers (Home Assistant button press) initiate a burst scan for up to
+`TRIGGER_BURST_MS` (default 4s). Each sample is a fresh grab of a
+full-resolution frame from the camera's main stream, taken no faster than
+`TRIGGER_SAMPLE_MS` (default 200ms) apart. The first match at or above the
+threshold is published to MQTT immediately.
+
+For H.264 streams only keyframes are decoded: the camera repeats
+SPS+PPS+IDR every couple of seconds and an IDR decodes standalone to a
+complete frame, so decoding only keyframes yields the same picture quality
+for a fraction of the CPU — and it keeps the decoder ahead of the packet rate,
+so no RTP packets are dropped.
 
 Key behaviours:
 
@@ -95,6 +100,5 @@ Key behaviours:
 - **Embeddings stay byte-identical.** `FACE_ALIGNMENT=bbox` (default) reproduces
   today's enrolled embeddings exactly. Switching to `arcface5` produces a
   different embedding space and **requires deleting and re-enrolling all users**.
-- **Cold buffer fallback.** If the buffer has no fresh frame when a trigger
-  arrives, the server falls back to a one-shot RTSP check so MQTT scanning is
-  not disabled by a cold or broken sub-stream.
+- **Connection failures are not scan outcomes.** If the camera cannot be
+  reached, the burst returns `not ok` and writes no audit row.

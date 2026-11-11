@@ -28,7 +28,6 @@ type Config struct {
 	DetSession     *ort.Session
 	RecSession     *ort.Session
 	RTSPURL        string
-	StreamURL      string
 	EnableUI       bool
 	BasePath       string
 	Threshold      float32
@@ -48,18 +47,12 @@ type FaceAPI struct {
 	Handler   http.Handler
 	MQTTReady bool
 	// CheckStream is the one-shot stream-check function used by the MQTT bridge
-	// when no buffered stream is configured.
+	// when no camera URL is configured.
 	CheckStream func(rtspURL string) (*domain.StreamCheckResult, error)
-	// ScanBurst is the buffered burst scanner used by the MQTT bridge when a
-	// sub-stream is configured. It scans continuously for the burst window and
+	// ScanBurst is the burst scanner used by the MQTT bridge when a camera URL
+	// is configured. It grabs full-resolution frames for the burst window and
 	// returns the first match at or above the threshold.
 	ScanBurst func(ctx context.Context) (*domain.StreamCheckResult, error)
-
-	// source is the buffered frame source, started by Start and stopped by Stop.
-	source *framesource.Source
-
-	// startCancel cancels the source Run goroutine.
-	startCancel context.CancelFunc
 }
 
 // NewFaceAPI builds all components and wires them together.
@@ -108,23 +101,20 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.Logger.Info().Int("entries", n).Msg("backfilled audit thumbnails")
 	}
 
-	// Build the buffered frame source when a sub-stream URL is configured.
-	var src *framesource.Source
-	if cfg.StreamURL != "" {
-		src = framesource.New(cfg.StreamURL, cfg.Logger)
-		faceService.WithFrameSource(src)
+	// The burst scanner grabs full-resolution frames straight from the
+	// camera's main stream. The sub-stream was unusable for matching: at
+	// 640x480 a face at 3 m is 50 px and scores ~0.44, while the same face
+	// in the 2560x1920 main stream is 200 px and scores ~0.90.
+	if cfg.RTSPURL != "" {
+		faceService.WithFrameGrabber(framesource.NewGrabber(cfg.RTSPURL, cfg.Logger))
 		faceService.WithBurst(cfg.BurstWindow, cfg.SampleInterval)
-		// The cold-buffer fallback uses the one-shot RTSP URL (the main
-		// stream), which is a better source for matching than the buffered
-		// sub-stream because faces are much larger in it.
-		faceService.WithStreamURL(cfg.RTSPURL)
 		cfg.Logger.Info().
-			Str("stream_url", config.RedactURL(cfg.StreamURL)).
+			Str("stream_url", config.RedactURL(cfg.RTSPURL)).
 			Dur("burst_window", cfg.BurstWindow).
 			Dur("sample_interval", cfg.SampleInterval).
 			Msg("live burst pipeline enabled")
 	} else {
-		cfg.Logger.Info().Msg("live burst pipeline disabled (no RTSP_STREAM_URL)")
+		cfg.Logger.Info().Msg("live burst pipeline disabled (no RTSP_URL)")
 	}
 
 	mux := http.NewServeMux()
@@ -148,31 +138,18 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		MQTTReady:   true,
 		CheckStream: faceService.CheckStream,
 		ScanBurst:   faceService.ScanBurst,
-		source:      src,
 	}
 	return api, nil
 }
 
-// Start begins running the buffered frame source (if configured). It must be
-// called before Stop or Close.
-func (a *FaceAPI) Start(ctx context.Context) {
-	if a.source == nil {
-		return
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	a.startCancel = cancel
-	go a.source.Run(ctx)
-}
+// Start is a no-op: the burst scanner grabs frames on demand, so there is no
+// background stream to run.
+func (a *FaceAPI) Start(ctx context.Context) {}
 
-// Stop cancels the source Run goroutine (if a frame source is configured).
-func (a *FaceAPI) Stop() {
-	if a.startCancel != nil {
-		a.startCancel()
-	}
-}
+// Stop is a no-op; see Start.
+func (a *FaceAPI) Stop() {}
 
-// Close stops the source goroutine (if a frame source is configured).
-// It is safe to call more than once.
+// Close releases the API resources. It is safe to call more than once.
 func (a *FaceAPI) Close() {
 	a.Stop()
 }

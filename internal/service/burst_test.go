@@ -77,29 +77,31 @@ func (m *burstUserRepo) ListAll() ([]*domain.User, error) {
 	return m.users, nil
 }
 
-type burstSource struct {
-	w, h       int
-	seq        uint64
-	fixedSeq   bool
-	alwaysFail bool
+// burstGrabber is a fake FrameGrabber that hands out canned frames.
+type burstGrabber struct {
+	w, h     int
+	frames   int   // number of frames to hand out before failing
+	err      error // returned by every Grab
+	calls    int32 // number of Grab calls
+	grabHook func(call int)
 }
 
-func (s *burstSource) Dims() (int, int) { return s.w, s.h }
-
-func (s *burstSource) Latest(dst []byte) (int, int, uint64, time.Time, bool) {
-	if s.alwaysFail {
-		return s.w, s.h, 0, time.Time{}, false
+func (g *burstGrabber) Grab(ctx context.Context) (int, int, []byte, error) {
+	call := int(atomic.AddInt32(&g.calls, 1))
+	if g.grabHook != nil {
+		g.grabHook(call)
 	}
-	if !s.fixedSeq {
-		s.seq++
+	if g.err != nil {
+		return 0, 0, nil, g.err
 	}
-	if len(dst) < s.w*s.h*3 {
-		return s.w, s.h, 0, time.Time{}, false
+	if g.frames > 0 && call > g.frames {
+		return 0, 0, nil, errors.New("no more frames")
 	}
-	for i := range dst[:s.w*s.h*3] {
-		dst[i] = byte(s.seq)
+	pix := make([]byte, g.w*g.h*3)
+	for i := range pix {
+		pix[i] = byte(call)
 	}
-	return s.w, s.h, s.seq, time.Now(), true
+	return g.w, g.h, pix, nil
 }
 
 func TestScanBurstReturnsFirstMatch(t *testing.T) {
@@ -107,10 +109,10 @@ func TestScanBurstReturnsFirstMatch(t *testing.T) {
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
 	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb, BBox: [4]float32{0, 0, 1, 1}}
 	proc := &burstProcessor{crop: crop}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(200*time.Millisecond, 20*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 20*time.Millisecond)
 
 	res, err := s.ScanBurst(context.Background())
 	if err != nil {
@@ -154,10 +156,10 @@ func TestScanBurstWritesOneAuditRow(t *testing.T) {
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
 	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: cropEmb}
 	proc := &burstProcessor{crop: crop}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(200*time.Millisecond, 20*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 20*time.Millisecond)
 
 	res, err := s.ScanBurst(context.Background())
 	if err != nil {
@@ -186,24 +188,27 @@ func TestScanBurstWritesOneAuditRow(t *testing.T) {
 	}
 }
 
-func TestScanBurstSkipsUnchangedSeq(t *testing.T) {
+func TestScanBurstStopsAtFirstMatch(t *testing.T) {
 	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
-	cropEmb := domain.FaceEmbedding{0, 1, 0, 0}
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
-	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: cropEmb}
+	// The first sample matches; the burst must stop there and not keep
+	// grabbing frames.
+	crop := &domain.FaceCrop{Embedding: aliceEmb}
 	proc := &burstProcessor{crop: crop}
-	// Fixed sequence: every Latest returns the same seq, so the processor must
-	// be invoked exactly once.
-	src := &burstSource{w: 640, h: 480, fixedSeq: true, seq: 1}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(5*time.Second, 10*time.Millisecond)
 
-	if _, err := s.ScanBurst(context.Background()); err != nil {
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
 		t.Fatalf("ScanBurst: %v", err)
 	}
-	if atomic.LoadInt32(&proc.callCount) != 1 {
-		t.Fatalf("processor called %d times, want 1 (unchanged seq must be skipped)", atomic.LoadInt32(&proc.callCount))
+	if res.Status != "ok" {
+		t.Fatalf("Status = %q, want ok", res.Status)
+	}
+	if got := atomic.LoadInt32(&grabber.calls); got != 1 {
+		t.Fatalf("Grab called %d times, want 1 (the burst must stop at the first match)", got)
 	}
 }
 
@@ -212,10 +217,10 @@ func TestScanBurstReadsUsersOnce(t *testing.T) {
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
 	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb}
 	proc := &burstProcessor{crop: crop}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(100*time.Millisecond, 10*time.Millisecond)
 
 	if _, err := s.ScanBurst(context.Background()); err != nil {
 		t.Fatalf("ScanBurst: %v", err)
@@ -225,12 +230,12 @@ func TestScanBurstReadsUsersOnce(t *testing.T) {
 	}
 }
 
-func TestScanBurstNoFrameSource(t *testing.T) {
+func TestScanBurstNoFrameGrabber(t *testing.T) {
 	s := New(&mockUserRepo{}, &mockAuditRepo{}, &mockProcessor{}, 0.5)
-	// No frame source configured.
+	// No frame grabber configured.
 	_, err := s.ScanBurst(context.Background())
 	if err == nil {
-		t.Fatal("expected error when frame source is not configured")
+		t.Fatal("expected error when frame grabber is not configured")
 	}
 }
 
@@ -241,10 +246,10 @@ func TestScanBurstDeadlineReturnsBest(t *testing.T) {
 	crop2 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0.6, 0.8, 0, 0}} // score 0.6
 	crop3 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 0, 1, 0}}     // score 0.0
 	proc := &burstProcessor{crops: []*domain.FaceCrop{crop1, crop2, crop3}}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.7).WithFrameSource(src).WithBurst(150*time.Millisecond, 20*time.Millisecond)
+	s := New(users, audit, proc, 0.7).WithFrameGrabber(grabber).WithBurst(150*time.Millisecond, 20*time.Millisecond)
 
 	res, err := s.ScanBurst(context.Background())
 	if err != nil {
@@ -277,10 +282,10 @@ func TestScanBurstDeadlineReturnsBest(t *testing.T) {
 func TestScanBurstAllNoFaceWritesNoFaceRow(t *testing.T) {
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
 	proc := &burstProcessor{errs: []error{domain.ErrNoFace, domain.ErrNoFace, domain.ErrNoFace}}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(100*time.Millisecond, 10*time.Millisecond)
 
 	res, err := s.ScanBurst(context.Background())
 	if err != nil {
@@ -314,10 +319,10 @@ func TestScanBurstProcessorErrors(t *testing.T) {
 		errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
 		errors.New("processing error"), errors.New("processing error"), errors.New("processing error")}
 	proc := &burstProcessor{errs: errs}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(100*time.Millisecond, 10*time.Millisecond)
 
 	res, err := s.ScanBurst(context.Background())
 	if err != nil {
@@ -337,34 +342,51 @@ func TestScanBurstProcessorErrors(t *testing.T) {
 	}
 }
 
-type fakeRTSPReader struct {
-	frame     []byte
-	err       error
-	callCount int
-}
-
-func (f *fakeRTSPReader) ReadFrame(url string, timeout time.Duration) ([]byte, error) {
-	f.callCount++
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.frame, nil
-}
-
-func TestScanBurstFallbackWhenNoFrames(t *testing.T) {
+// TestScanBurstGrabFailure checks that a camera that cannot be reached
+// produces a not-ok result rather than an error, and writes no audit row:
+// a connection failure is not a scan outcome.
+func TestScanBurstGrabFailure(t *testing.T) {
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
-	crop := &domain.FaceCrop{Embedding: alice.Embeddings[0]}
-	proc := &burstProcessor{crop: crop}
-	// Frame source never produces a frame (cold buffer).
-	src := &burstSource{w: 640, h: 480, alwaysFail: true}
+	proc := &burstProcessor{crop: &domain.FaceCrop{Embedding: alice.Embeddings[0]}}
+	grabber := &burstGrabber{err: errors.New("RTSP connect: connection refused")}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).
-		WithFrameSource(src).
-		WithBurst(100*time.Millisecond, 10*time.Millisecond).
-		WithStreamURL("rtsp://fake")
-	rtspReader := &fakeRTSPReader{frame: []byte("frame")}
-	s.rtspReader = rtspReader
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Status != "not ok" {
+		t.Fatalf("Status = %q, want not ok", res.Status)
+	}
+	if res.Matched {
+		t.Error("Matched = true, want false")
+	}
+	if len(audit.entries) != 0 {
+		t.Fatalf("expected 0 audit rows for a connection failure, got %d", len(audit.entries))
+	}
+}
+
+// TestScanBurstRetriesAfterGrabFailure checks that a transient grab failure
+// does not end the burst: the next grab is attempted inside the window.
+func TestScanBurstRetriesAfterGrabFailure(t *testing.T) {
+	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	crop := &domain.FaceCrop{Embedding: aliceEmb}
+	proc := &burstProcessor{crop: crop}
+	// The first grab fails; the second succeeds.
+	grabber := &burstGrabber{w: 640, h: 480}
+	grabber.grabHook = func(call int) {
+		if call == 1 {
+			grabber.err = errors.New("RTSP connect: connection refused")
+		} else {
+			grabber.err = nil
+		}
+	}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 10*time.Millisecond)
 
 	res, err := s.ScanBurst(context.Background())
 	if err != nil {
@@ -376,9 +398,6 @@ func TestScanBurstFallbackWhenNoFrames(t *testing.T) {
 	if res.Name != "alice" {
 		t.Errorf("Name = %q, want alice", res.Name)
 	}
-	if rtspReader.callCount != 1 {
-		t.Fatalf("CheckStream called %d times, want 1 (single fallback)", rtspReader.callCount)
-	}
 }
 
 func TestScanBurstCancel(t *testing.T) {
@@ -386,10 +405,10 @@ func TestScanBurstCancel(t *testing.T) {
 	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
 	crop := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 1, 0, 0}} // score 0.0
 	proc := &burstProcessor{crop: crop}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(5*time.Second, 10*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(5*time.Second, 10*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan *domain.StreamCheckResult, 1)
@@ -426,10 +445,10 @@ func TestScanBurstDoesNotHoldServiceMutex(t *testing.T) {
 	crop := &domain.FaceCrop{Embedding: emb}
 	blockCh := make(chan struct{})
 	proc := &burstProcessor{crop: crop, blockCh: blockCh}
-	src := &burstSource{w: 640, h: 480}
+	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
 	audit := &mockAuditRepo{}
-	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(5*time.Second, 10*time.Millisecond)
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(5*time.Second, 10*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan *domain.StreamCheckResult, 1)

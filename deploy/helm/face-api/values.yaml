@@ -57,9 +57,7 @@ persistence:
 # Extra environment variables passed to the container, e.g.
 # extraEnv:
 #   - name: RTSP_URL
-#     value: "rtsp://..."
-#   - name: RTSP_STREAM_URL
-#     value: "rtsp://user:pass@camera:554/h264Preview_01_sub"
+#     value: "rtsp://user:pass@camera:554/h264Preview_01_main"
 #   - name: ONNX_INTRA_OP_THREADS
 #     value: "4"
 extraEnv:

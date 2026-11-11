@@ -115,15 +115,13 @@ type RTSPReader interface {
 	ReadFrame(url string, timeout time.Duration) ([]byte, error)
 }
 
-// FrameSource exposes the newest decoded camera frame (implemented by
+// FrameGrabber captures a single camera frame (implemented by
 // internal/framesource).
-type FrameSource interface {
-	// Dims returns the current frame size, or 0,0 before the first frame.
-	Dims() (w, h int)
-	// Latest copies the newest frame into dst (len(dst) >= w*h*3) and reports
-	// its dimensions, sequence number and capture time. Returns ok=false when
-	// no frame has been published yet.
-	Latest(dst []byte) (w, h int, seq uint64, at time.Time, ok bool)
+type FrameGrabber interface {
+	// Grab opens a session to the camera and returns the next decodable
+	// frame as packed RGB pixels (w*h*3 bytes). The context bounds the
+	// wait, so a cancelled context returns without a frame.
+	Grab(ctx context.Context) (w, h int, pix []byte, err error)
 }
 
 // StreamScanner scans buffered camera frames and returns the first match at
