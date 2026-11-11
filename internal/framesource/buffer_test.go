@@ -2,6 +2,7 @@ package framesource
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"h2hsecure.com/face/internal/imaging"
@@ -127,31 +128,43 @@ func TestLatestTooSmallDstReturnsFalse(t *testing.T) {
 func TestConcurrentPublishAndLatest(t *testing.T) {
 	b := NewBuffer()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	const frameW, frameH = 64, 64
+	const publishes = 2000
+
+	// Small frames publish quickly, so readers genuinely overlap the writer.
+	startReaders := make(chan struct{})
+	var writerDone sync.WaitGroup
+	writerDone.Add(1)
 	go func() {
-		defer wg.Done()
-		for seq := uint64(0); seq < 2000; seq++ {
+		defer writerDone.Done()
+		close(startReaders) // readers may start once the first publish is underway
+		for seq := uint64(0); seq < publishes; seq++ {
 			v := byte(seq % 251)
-			b.Publish(func(dst *imaging.RGBImage) { fillFrame(dst, 640, 480, v) })
+			b.Publish(func(dst *imaging.RGBImage) { fillFrame(dst, frameW, frameH, v) })
 		}
 	}()
+	<-startReaders
 
-	// 4 concurrent readers.
+	var readCount atomic.Int64
+	var readerWg sync.WaitGroup
 	for r := 0; r < 4; r++ {
-		wg.Add(1)
+		readerWg.Add(1)
 		go func() {
-			defer wg.Done()
-			dst := make([]byte, 640*480*3)
+			defer readerWg.Done()
+			dst := make([]byte, frameW*frameH*3)
+			reads := 0
 			for i := 0; i < 500; i++ {
 				w, h, _, _, ok := b.Latest(dst)
 				if !ok {
 					continue // no frame yet
 				}
-				if w != 640 || h != 480 {
-					t.Errorf("Latest dims = %dx%d, want 640x480", w, h)
+				if w != frameW || h != frameH {
+					t.Errorf("Latest dims = %dx%d, want %dx%d", w, h, frameW, frameH)
+					return
 				}
-				// Every pixel of a published frame must carry the same v.
+				reads++
+				// Every pixel of a published frame must carry the same v. A torn
+				// read (observing a half-swapped buffer) would show mixed values.
 				first := dst[0]
 				for j := 1; j < len(dst); j++ {
 					if dst[j] != first {
@@ -160,8 +173,13 @@ func TestConcurrentPublishAndLatest(t *testing.T) {
 					}
 				}
 			}
+			readCount.Add(int64(reads))
 		}()
 	}
 
-	wg.Wait()
+	writerDone.Wait()
+	readerWg.Wait()
+	if readCount.Load() == 0 {
+		t.Fatal("no frames observed by any reader — the test would pass vacuously")
+	}
 }
