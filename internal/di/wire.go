@@ -1,14 +1,17 @@
 package di
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/rs/zerolog"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
 	"h2hsecure.com/face/internal/domain"
+	"h2hsecure.com/face/internal/framesource"
 	fhttp "h2hsecure.com/face/internal/http"
 	"h2hsecure.com/face/internal/repository"
 	"h2hsecure.com/face/internal/rtsp"
@@ -24,11 +27,18 @@ type Config struct {
 	DetSession     *ort.Session
 	RecSession     *ort.Session
 	RTSPURL        string
+	StreamURL      string
 	EnableUI       bool
 	BasePath       string
 	Threshold      float32
 	AuthToken      string
 	MaxUploadBytes int64
+
+	// Live burst pipeline knobs.
+	Alignment      service.AlignmentMode
+	BurstWindow    time.Duration
+	SampleInterval time.Duration
+	IntraOpThreads int
 }
 
 // FaceAPI is the fully wired-up face API. Callers only interact with the
@@ -36,10 +46,22 @@ type Config struct {
 type FaceAPI struct {
 	Handler   http.Handler
 	MQTTReady bool
-	// CheckStream is the stream-check function used by the MQTT bridge.
+	// CheckStream is the one-shot stream-check function used by the MQTT bridge
+	// when no buffered stream is configured.
 	CheckStream func(rtspURL string) (*domain.StreamCheckResult, error)
+	// ScanBurst is the buffered burst scanner used by the MQTT bridge when a
+	// sub-stream is configured. It scans continuously for the burst window and
+	// returns the first match at or above the threshold.
+	ScanBurst func(ctx context.Context) (*domain.StreamCheckResult, error)
+
+	// source is the buffered frame source, started by Start and stopped by Stop.
+	source *framesource.Source
+
+	// startCancel cancels the source Run goroutine.
+	startCancel context.CancelFunc
 }
 
+// NewFaceAPI builds all components and wires them together.
 func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	if err := EnsureBuckets(cfg.DB); err != nil {
 		return nil, err
@@ -54,7 +76,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.Logger.Warn().Err(err).Msg("backfill users from audit failed")
 	}
 
-	processor, err := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession, service.AlignmentBBox)
+	processor, err := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession, cfg.Alignment)
 	if err != nil {
 		return nil, fmt.Errorf("create face processor: %w", err)
 	}
@@ -85,6 +107,21 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.Logger.Info().Int("entries", n).Msg("backfilled audit thumbnails")
 	}
 
+	// Build the buffered frame source when a sub-stream URL is configured.
+	var src *framesource.Source
+	if cfg.StreamURL != "" {
+		src = framesource.New(cfg.StreamURL, cfg.Logger)
+		faceService.WithFrameSource(src)
+		faceService.WithBurst(cfg.BurstWindow, cfg.SampleInterval)
+		cfg.Logger.Info().
+			Str("stream_url", cfg.StreamURL).
+			Dur("burst_window", cfg.BurstWindow).
+			Dur("sample_interval", cfg.SampleInterval).
+			Msg("live burst pipeline enabled")
+	} else {
+		cfg.Logger.Info().Msg("live burst pipeline disabled (no RTSP_STREAM_URL)")
+	}
+
 	mux := http.NewServeMux()
 	handlers.RegisterHandlers(mux)
 
@@ -101,11 +138,38 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 	finalHandler = fhttp.NewAuthMiddleware(mux, cfg.AuthToken, cfg.EnableUI, cfg.BasePath)
 	finalHandler = fhttp.NewMaxSizeMiddleware(finalHandler, cfg.MaxUploadBytes)
 
-	return &FaceAPI{
+	api := &FaceAPI{
 		Handler:     finalHandler,
 		MQTTReady:   true,
 		CheckStream: faceService.CheckStream,
-	}, nil
+		ScanBurst:   faceService.ScanBurst,
+		source:      src,
+	}
+	return api, nil
+}
+
+// Start begins running the buffered frame source (if configured). It must be
+// called before Stop or Close.
+func (a *FaceAPI) Start(ctx context.Context) {
+	if a.source == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	a.startCancel = cancel
+	go a.source.Run(ctx)
+}
+
+// Stop cancels the source Run goroutine and waits for it to finish.
+func (a *FaceAPI) Stop() {
+	if a.startCancel != nil {
+		a.startCancel()
+	}
+}
+
+// Close stops the source and closes the processor. It is safe to call more
+// than once.
+func (a *FaceAPI) Close() {
+	a.Stop()
 }
 
 // EnsureBuckets creates the required bbolt buckets in the given database.

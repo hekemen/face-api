@@ -15,9 +15,11 @@ import (
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
+	"h2hsecure.com/face/internal/config"
 	"h2hsecure.com/face/internal/di"
 	"h2hsecure.com/face/internal/domain"
 	"h2hsecure.com/face/internal/mqtt"
+	"h2hsecure.com/face/internal/service"
 )
 
 const (
@@ -52,7 +54,18 @@ func main() {
 	}
 	defer ortEnv.Close()
 
-	sessOpts := &ort.SessionOptions{IntraOpNumThreads: 1}
+	// ONNX intra-op threads (default 4).
+	threads, err := config.IntraOpThreads(os.Getenv)
+	if err != nil {
+		logger.Warn().Err(err).Msg("invalid ONNX_INTRA_OP_THREADS, using default 4")
+	}
+	sessOpts := &ort.SessionOptions{IntraOpNumThreads: threads}
+
+	// Face alignment mode (default bbox; arcface5 is opt-in).
+	align, err := config.Alignment(os.Getenv)
+	if err != nil {
+		log.Fatalf("FACE_ALIGNMENT: %v", err)
+	}
 
 	detFile, err := os.Open(detModelPath)
 	if err != nil {
@@ -114,15 +127,32 @@ func main() {
 		DetSession:     detSess,
 		RecSession:     recSess,
 		RTSPURL:        os.Getenv("RTSP_URL"),
+		StreamURL:      os.Getenv("RTSP_STREAM_URL"),
 		EnableUI:       enableUI,
 		BasePath:       uiBasePath,
 		Threshold:      threshold,
 		AuthToken:      apiToken,
 		MaxUploadBytes: maxUploadBytes,
+
+		// Live burst pipeline knobs.
+		Alignment:      service.AlignmentMode(align),
+		BurstWindow:    config.BurstWindow(os.Getenv),
+		SampleInterval: config.SampleInterval(os.Getenv),
+		IntraOpThreads: threads,
 	})
 	if err != nil {
 		log.Fatalf("Failed to wire face API: %v", err)
 	}
+
+	logger.Info().
+		Str("alignment", string(align)).
+		Int("intra_op_threads", threads).
+		Str("rtsp_stream_url", os.Getenv("RTSP_STREAM_URL")).
+		Msg("face API wired")
+
+	// Start the buffered frame source (if a sub-stream URL is configured).
+	faceAPI.Start(context.Background())
+	defer faceAPI.Close()
 
 	// 4. Set up MQTT bridge if configured
 	var mqttBridge *mqtt.Bridge
@@ -145,9 +175,19 @@ func main() {
 			RTSPURL:         os.Getenv("RTSP_URL"),
 		}
 
-		mqttBridge, err = mqtt.New(mqttCfg, func(ctx context.Context) (*domain.StreamCheckResult, error) {
-			return faceAPI.CheckStream(mqttCfg.RTSPURL)
-		})
+		// Select the trigger: buffered burst scan when a sub-stream URL is set,
+		// otherwise the one-shot RTSP check.
+		var trigger func(context.Context) (*domain.StreamCheckResult, error)
+		if os.Getenv("RTSP_STREAM_URL") != "" {
+			trigger = faceAPI.ScanBurst
+			logger.Info().Msg("MQTT trigger: buffered burst scan")
+		} else {
+			trigger = func(ctx context.Context) (*domain.StreamCheckResult, error) {
+				return faceAPI.CheckStream(mqttCfg.RTSPURL)
+			}
+			logger.Info().Msg("MQTT trigger: one-shot RTSP check")
+		}
+		mqttBridge, err = mqtt.New(mqttCfg, trigger)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
 		}
