@@ -481,3 +481,133 @@ func TestAuditRepositoryListPaginatedTotalCountWithFilter(t *testing.T) {
 		t.Errorf("expected 12 entries on page 1, got %d", len(got))
 	}
 }
+
+// writeThumbEntry stores an audit entry with the given face image and thumb.
+func writeThumbEntry(t *testing.T, db *bolt.DB, name, faceImage, thumb string) {
+	t.Helper()
+	err := db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(auditBucket))
+		if b == nil {
+			t.Fatal("audit bucket not found")
+		}
+		seq, err := b.NextSequence()
+		if err != nil {
+			return err
+		}
+		key := make([]byte, 8)
+		binary.BigEndian.PutUint64(key, seq)
+		val, err := json.Marshal(auditEntryJSON{
+			Time:      formatTime(time.Now()),
+			Endpoint:  "recognize",
+			Name:      name,
+			FaceImage: faceImage,
+			FaceThumb: thumb,
+		})
+		if err != nil {
+			return err
+		}
+		return b.Put(key, val)
+	})
+	if err != nil {
+		t.Fatalf("write thumb entry: %v", err)
+	}
+}
+
+// thumbsByName returns the stored thumbnail of every entry, keyed by name.
+func thumbsByName(t *testing.T, db *bolt.DB) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(auditBucket))
+		return b.ForEach(func(k, v []byte) error {
+			var j auditEntryJSON
+			if err := json.Unmarshal(v, &j); err != nil {
+				return nil
+			}
+			out[j.Name] = j.FaceThumb
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("read entries: %v", err)
+	}
+	return out
+}
+
+func TestBackfillFaceThumbsSinglePass(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	repo := &AuditRepository{db: db}
+	thumbFor := func(faceImage string) string {
+		if faceImage == "" {
+			return ""
+		}
+		return "thumb-for-" + faceImage
+	}
+
+	writeThumbEntry(t, db, "needs1", "img1", "")
+	writeThumbEntry(t, db, "needs2", "img2", "")
+	writeThumbEntry(t, db, "has", "img3", "existing")
+	writeThumbEntry(t, db, "noface", "", "")
+
+	updated, err := repo.BackfillFaceThumbs(thumbFor, 0)
+	if err != nil {
+		t.Fatalf("BackfillFaceThumbs: %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("updated %d entries, want 2 (only those with a face image and no thumb)", updated)
+	}
+
+	thumbs := thumbsByName(t, db)
+	if thumbs["needs1"] != "thumb-for-img1" {
+		t.Errorf("needs1 thumb = %q, want thumb-for-img1", thumbs["needs1"])
+	}
+	if thumbs["needs2"] != "thumb-for-img2" {
+		t.Errorf("needs2 thumb = %q, want thumb-for-img2", thumbs["needs2"])
+	}
+	if thumbs["has"] != "existing" {
+		t.Errorf("has thumb = %q, want existing (must not be overwritten)", thumbs["has"])
+	}
+	if thumbs["noface"] != "" {
+		t.Errorf("noface thumb = %q, want empty", thumbs["noface"])
+	}
+
+	// Idempotent: a second run finds nothing left to do.
+	updated, err = repo.BackfillFaceThumbs(thumbFor, 0)
+	if err != nil {
+		t.Fatalf("second BackfillFaceThumbs: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("second run updated %d entries, want 0", updated)
+	}
+}
+
+func TestBackfillFaceThumbsRespectsMaxUpdates(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	repo := &AuditRepository{db: db}
+	thumbFor := func(faceImage string) string { return "thumb" }
+
+	for i := 0; i < 5; i++ {
+		writeThumbEntry(t, db, string(rune('a'+i)), "img", "")
+	}
+
+	updated, err := repo.BackfillFaceThumbs(thumbFor, 2)
+	if err != nil {
+		t.Fatalf("BackfillFaceThumbs: %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("updated %d entries, want 2 (bounded by maxUpdates)", updated)
+	}
+
+	// The next call picks up where the previous one stopped.
+	updated, err = repo.BackfillFaceThumbs(thumbFor, 2)
+	if err != nil {
+		t.Fatalf("second BackfillFaceThumbs: %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("second run updated %d entries, want 2", updated)
+	}
+}

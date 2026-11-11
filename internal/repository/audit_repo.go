@@ -483,6 +483,9 @@ func (r *AuditRepository) GetAuditFace(timestamp string) (string, error) {
 // RFC3339 timestamp and face_image both match. Matching on both fields
 // disambiguates entries written within the same second. Returns an error
 // if no entry matches.
+//
+// Prefer BackfillFaceThumbs when updating many entries: this method rescans
+// the whole bucket per call, which is O(N^2) across a large audit table.
 func (r *AuditRepository) SetFaceThumb(timestamp time.Time, faceImage, thumb string) error {
 	targetTime := formatTime(timestamp)
 	var found bool
@@ -516,6 +519,57 @@ func (r *AuditRepository) SetFaceThumb(timestamp time.Time, faceImage, thumb str
 		return nil
 	})
 	return err
+}
+
+// BackfillFaceThumbs generates and stores a thumbnail for every audit entry
+// that has a face image but no stored thumbnail, calling thumbFor to produce
+// each thumbnail.
+//
+// It performs a single scan of the audit bucket inside one transaction, so
+// the work is O(N) and memory stays bounded to a single entry — unlike
+// calling SetFaceThumb per entry, which rescans the whole bucket every time.
+//
+// At most maxUpdates entries are updated per call, which keeps startup time
+// predictable on a large table. The remainder are thumbnailed on the fly when
+// they are listed, so nothing is lost. Returns the number of entries updated.
+func (r *AuditRepository) BackfillFaceThumbs(thumbFor func(faceImage string) string, maxUpdates int) (int, error) {
+	updated := 0
+	err := r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(auditBucket))
+		if b == nil {
+			return fmt.Errorf("bucket %q not found", auditBucket)
+		}
+		return b.ForEach(func(k, v []byte) error {
+			if maxUpdates > 0 && updated >= maxUpdates {
+				return nil
+			}
+			var j auditEntryJSON
+			if err := json.Unmarshal(v, &j); err != nil {
+				return nil
+			}
+			if j.FaceImage == "" || j.FaceThumb != "" {
+				return nil
+			}
+			thumb := thumbFor(j.FaceImage)
+			if thumb == "" {
+				return nil
+			}
+			j.FaceThumb = thumb
+			val, err := json.Marshal(j)
+			if err != nil {
+				return err
+			}
+			if err := b.Put(k, val); err != nil {
+				return err
+			}
+			updated++
+			return nil
+		})
+	})
+	if err != nil {
+		return updated, err
+	}
+	return updated, nil
 }
 
 // ComputeStats returns aggregate statistics from all audit entries.

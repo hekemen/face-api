@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -12,6 +13,10 @@ import (
 
 // Bucket name for user data in bbolt.
 const facesBucket = "Faces"
+
+// enrollEndpointMarker is the serialized form of an audit entry's endpoint
+// field. It is used as a cheap pre-filter before decoding a whole entry.
+var enrollEndpointMarker = []byte(`"endpoint":"enroll"`)
 
 // UserRepository implements domain.UserRepository using bbolt.
 type UserRepository struct {
@@ -167,6 +172,13 @@ func (r *UserRepository) BackfillUsersFromAudit() (int, error) {
 		var enrollments []enrollEntry
 		c := auditB.Cursor()
 		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			// Cheap pre-filter: only ENROLL entries matter, and an audit
+			// entry's face image can be a megabyte of base64. Parsing every
+			// entry just to discard it makes startup scale with the size of
+			// the audit table.
+			if !bytes.Contains(v, enrollEndpointMarker) {
+				continue
+			}
 			var j auditEntryJSON
 			if err := json.Unmarshal(v, &j); err != nil {
 				continue

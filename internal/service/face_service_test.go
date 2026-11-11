@@ -144,6 +144,29 @@ func (m *mockAuditRepo) SetFaceThumb(timestamp time.Time, faceImage, thumb strin
 	return fmt.Errorf("no audit entry for time %s and face image", timestamp.Format(time.RFC3339))
 }
 
+// BackfillFaceThumbs mirrors the repository behaviour: one pass over the
+// entries, updating those that have a face image but no thumbnail.
+func (m *mockAuditRepo) BackfillFaceThumbs(thumbFor func(faceImage string) string, maxUpdates int) (int, error) {
+	updated := 0
+	for i := range m.entries {
+		if maxUpdates > 0 && updated >= maxUpdates {
+			break
+		}
+		e := &m.entries[i]
+		if e.FaceImage == "" || e.FaceThumb != "" {
+			continue
+		}
+		thumb := thumbFor(e.FaceImage)
+		if thumb == "" {
+			continue
+		}
+		m.thumbSets = append(m.thumbSets, thumbSetCall{timestamp: e.Time, faceImage: e.FaceImage, thumb: thumb})
+		e.FaceThumb = thumb
+		updated++
+	}
+	return updated, nil
+}
+
 func (m *mockAuditRepo) ComputeStats() (domain.Stats, error) {
 	return domain.Stats{}, nil
 }

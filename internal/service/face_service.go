@@ -802,31 +802,24 @@ func (s *FaceServiceImpl) ListUnmatched(n int) ([]domain.AuditEntry, error) {
 	return entries, nil
 }
 
+// maxStartupThumbBackfill bounds how many audit entries the startup
+// thumbnail backfill updates, so a large audit table cannot stall server
+// startup. Entries beyond the bound are thumbnailed on the fly when they are
+// listed, so nothing is lost.
+const maxStartupThumbBackfill = 200
+
 // BackfillAuditThumbnails generates a stored thumbnail for audit entries
 // whose FaceImage is large but has no FaceThumb (legacy data written before
 // the thumbnail field existed). It is idempotent: entries that already have
 // a thumb, or with a small/missing face image, are skipped. Returns the
 // number of entries updated.
+//
+// The work happens in a single pass over the audit table so that startup time
+// does not grow with the square of the table size.
 func (s *FaceServiceImpl) BackfillAuditThumbnails() (int, error) {
-	entries, err := s.audit.Recent(100000)
+	updated, err := s.audit.BackfillFaceThumbs(thumbnailForEntry, maxStartupThumbBackfill)
 	if err != nil {
-		return 0, fmt.Errorf("list audit entries: %w", err)
-	}
-	updated := 0
-	for i := range entries {
-		e := &entries[i]
-		if len(e.FaceImage) <= thumbnailSizeThreshold || e.FaceThumb != "" {
-			continue
-		}
-		thumb := thumbnailForEntry(e.FaceImage)
-		if thumb == "" {
-			continue
-		}
-		if err := s.audit.SetFaceThumb(e.Time, e.FaceImage, thumb); err != nil {
-			s.logf("backfill: set face thumb failed", "name", e.Name, "time", e.Time.Format(time.RFC3339), "error", err)
-			continue
-		}
-		updated++
+		return updated, fmt.Errorf("backfill audit thumbnails: %w", err)
 	}
 	return updated, nil
 }

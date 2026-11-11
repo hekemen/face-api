@@ -62,6 +62,12 @@ type AuditRepository interface {
 	// SetFaceThumb stores the thumbnail for the audit entry whose RFC3339
 	// timestamp and face_image both match. Returns an error if no entry matches.
 	SetFaceThumb(timestamp time.Time, faceImage, thumb string) error
+	// BackfillFaceThumbs generates and stores thumbnails for audit entries
+	// that have a face image but no stored thumbnail, calling thumbFor to
+	// produce each one. It scans the audit table once, so the cost does not
+	// grow with the square of the table size. At most maxUpdates entries are
+	// updated per call; the rest are thumbnailed on the fly when listed.
+	BackfillFaceThumbs(thumbFor func(faceImage string) string, maxUpdates int) (int, error)
 }
 
 // ListRecognizeEntriesOpts holds filtering and pagination parameters for recognize-only audit entries.
