@@ -113,7 +113,7 @@ func TestMain(m *testing.M) {
 	imgName := "face-api-test:e2e"
 
 	imgStartReq := testcontainers.ContainerRequest{
-		Image:        imgName,
+		Image: imgName,
 		// UI enabled (no auth token) so the settings page can be exercised
 		// end-to-end; API routes stay open when no token is configured.
 		Env:          map[string]string{"ENABLE_UI": "true"},
@@ -1027,4 +1027,196 @@ func TestRecognizeListEndpoint_E2E(t *testing.T) {
 	t.Log("recognize-list filtered:", string(filteredBody))
 
 	t.Log("=== PASS: /api/audit/recognize-list returns valid response ===")
+}
+
+// TestFaceAlignmentWarpE2E verifies that arcface5 alignment produces a match
+// when enrolling and recognizing the same person. It starts a separate
+// container with FACE_ALIGNMENT=arcface5 to exercise the warp code path
+// end-to-end.
+func TestFaceAlignmentWarpE2E(t *testing.T) {
+	t.Log("=== Starting container with FACE_ALIGNMENT=arcface5 ===")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	projectRoot := filepath.Dir(filepath.Dir(cwd))
+
+	imgBuildReq := testcontainers.ContainerRequest{
+		FromDockerfile: testcontainers.FromDockerfile{
+			Context:    projectRoot,
+			Dockerfile: "Dockerfile",
+			KeepImage:  true,
+			Repo:       "face-api-test",
+			Tag:        "e2e",
+		},
+	}
+
+	if _, err := testcontainers.GenericContainer(testCtx, testcontainers.GenericContainerRequest{
+		ContainerRequest: imgBuildReq,
+		Started:          false,
+	}); err != nil {
+		t.Fatalf("failed to build Docker image: %v", err)
+	}
+
+	imgName := "face-api-test:e2e"
+
+	imgStartReq := testcontainers.ContainerRequest{
+		Image:        imgName,
+		Env:          map[string]string{"ENABLE_UI": "true", "FACE_ALIGNMENT": "arcface5"},
+		WaitingFor:   wait.ForHTTP("/users").WithPort(testPort),
+		ExposedPorts: []string{testPort},
+	}
+
+	warpContainer, err := testcontainers.GenericContainer(testCtx, testcontainers.GenericContainerRequest{
+		ContainerRequest: imgStartReq,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start container: %v", err)
+	}
+	defer warpContainer.Terminate(testCtx)
+
+	time.Sleep(2 * time.Second)
+
+	host, err := warpContainer.Host(testCtx)
+	if err != nil {
+		t.Fatalf("failed to get container host: %v", err)
+	}
+
+	port, err := warpContainer.MappedPort(testCtx, "8081/tcp")
+	if err != nil {
+		t.Fatalf("failed to get container port: %v", err)
+	}
+
+	warpURL := fmt.Sprintf("http://%s:%s", host, port.Port())
+
+	t.Log("=== Step 1: Enrolling Anthony Hopkins with arcface5 alignment ===")
+	enrollBuf, enrollContentType := multipartBodyWithName("anthony", "image", "test_hopkins_1.jpg")
+	enrollReq, err := http.NewRequest(http.MethodPost, warpURL+"/enroll", enrollBuf)
+	if err != nil {
+		t.Fatalf("failed to create enroll request: %v", err)
+	}
+	enrollReq.Header.Set("Content-Type", enrollContentType)
+	resp, err := http.DefaultClient.Do(enrollReq)
+	if err != nil {
+		t.Fatalf("enroll request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d. Response: %s", resp.StatusCode, string(body))
+	}
+
+	t.Log("=== Step 2: Recognizing Anthony Hopkins with arcface5 alignment ===")
+	recognizeBuf, recognizeContentType := multipartBody("image", "test_hopkins_2.jpg")
+	recognizeReq, err := http.NewRequest(http.MethodPost, warpURL+"/recognize", recognizeBuf)
+	if err != nil {
+		t.Fatalf("failed to create recognize request: %v", err)
+	}
+	recognizeReq.Header.Set("Content-Type", recognizeContentType)
+	resp2, err := http.DefaultClient.Do(recognizeReq)
+	if err != nil {
+		t.Fatalf("recognize request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	var result struct {
+		Matched    bool    `json:"matched"`
+		Name       string  `json:"name"`
+		Similarity float64 `json:"similarity"`
+		DurationMs int64   `json:"duration_ms"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode recognition response: %v", err)
+	}
+
+	t.Logf("Recognition result: %+v", result)
+
+	if !result.Matched {
+		t.Errorf("expected match (matched=true) with arcface5 alignment, got matched=false with similarity=%.4f", result.Similarity)
+	}
+	if result.Name != "anthony" {
+		t.Errorf("expected name='anthony', got name='%s'", result.Name)
+	}
+	if result.Similarity < 0.45 {
+		t.Errorf("expected similarity >= 0.45 with arcface5 alignment, got %.4f", result.Similarity)
+	}
+
+	t.Log("=== PASS: arcface5 alignment correctly recognizes the same person ===")
+}
+
+// TestThreadsEnvE2E verifies that an invalid ONNX_INTRA_OP_THREADS value does
+// not prevent the server from booting (it falls back to the default with a
+// warning).
+func TestThreadsEnvE2E(t *testing.T) {
+	t.Log("=== Starting container with invalid ONNX_INTRA_OP_THREADS=abc ===")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	projectRoot := filepath.Dir(filepath.Dir(cwd))
+
+	imgBuildReq := testcontainers.ContainerRequest{
+		FromDockerfile: testcontainers.FromDockerfile{
+			Context:    projectRoot,
+			Dockerfile: "Dockerfile",
+			KeepImage:  true,
+			Repo:       "face-api-test",
+			Tag:        "e2e",
+		},
+	}
+
+	if _, err := testcontainers.GenericContainer(testCtx, testcontainers.GenericContainerRequest{
+		ContainerRequest: imgBuildReq,
+		Started:          false,
+	}); err != nil {
+		t.Fatalf("failed to build Docker image: %v", err)
+	}
+
+	imgName := "face-api-test:e2e"
+
+	imgStartReq := testcontainers.ContainerRequest{
+		Image:        imgName,
+		Env:          map[string]string{"ENABLE_UI": "true", "ONNX_INTRA_OP_THREADS": "abc"},
+		WaitingFor:   wait.ForHTTP("/users").WithPort(testPort),
+		ExposedPorts: []string{testPort},
+	}
+
+	threadsContainer, err := testcontainers.GenericContainer(testCtx, testcontainers.GenericContainerRequest{
+		ContainerRequest: imgStartReq,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start container: %v", err)
+	}
+	defer threadsContainer.Terminate(testCtx)
+
+	time.Sleep(2 * time.Second)
+
+	host, err := threadsContainer.Host(testCtx)
+	if err != nil {
+		t.Fatalf("failed to get container host: %v", err)
+	}
+
+	port, err := threadsContainer.MappedPort(testCtx, "8081/tcp")
+	if err != nil {
+		t.Fatalf("failed to get container port: %v", err)
+	}
+
+	threadsURL := fmt.Sprintf("http://%s:%s", host, port.Port())
+
+	// /users should respond even with an invalid thread env value.
+	resp, err := http.Get(threadsURL + "/users")
+	if err != nil {
+		t.Fatalf("/users request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 from /users with invalid thread env, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	t.Log("=== PASS: server boots with invalid ONNX_INTRA_OP_THREADS ===")
 }
