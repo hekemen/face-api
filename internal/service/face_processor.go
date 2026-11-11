@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
+
 	"h2hsecure.com/face/internal/domain"
 	"h2hsecure.com/face/internal/imaging"
 )
@@ -27,6 +28,7 @@ type detLevel struct {
 	stride    int
 	scoreName string
 	regName   string
+	kpsName   string // keypoints output (449/474/499), wired in Task 8
 }
 
 var detLevels = []detLevel{
@@ -36,44 +38,118 @@ var detLevels = []detLevel{
 }
 
 // FaceProcessorImpl implements domain.FaceProcessor using ONNX Runtime.
+//
+// All scratch buffers and both ONNX input tensors are allocated once at
+// construction and reused for every inference. Because ONNX Runtime sessions
+// are not thread-safe, pipelineMu is held for the whole detect+align+embed
+// pipeline; callers must not hold it across a burst of inferences (the burst
+// releases it between samples, so HTTP is never blocked for the whole window).
 type FaceProcessorImpl struct {
-	rt      *ort.Runtime
-	env     *ort.Env
-	detS    *ort.Session
-	recS    *ort.Session
-	inferMu sync.Mutex
+	rt         *ort.Runtime
+	env        *ort.Env
+	detS       *ort.Session
+	recS       *ort.Session
+	pipelineMu sync.Mutex // guards scratch + both sessions
+
+	canvas  *imaging.RGBImage // 640×640×3 detection canvas (top-left pad target)
+	detBlob []float32         // 3×640×640 detection input blob
+	detTens *ort.Value        // wraps detBlob; created once, reused every detection Run
+	crop    *imaging.RGBImage // 112×112×3 recognition crop target
+	recBlob []float32         // 3×112×112 recognition input blob
+	recTens *ort.Value        // wraps recBlob; created once, reused every recognition Run
 }
 
-// NewFaceProcessor creates a new ONNX-based face processor.
-func NewFaceProcessor(rt *ort.Runtime, env *ort.Env, detS, recS *ort.Session) *FaceProcessorImpl {
-	return &FaceProcessorImpl{
-		rt:   rt,
-		env:  env,
-		detS: detS,
-		recS: recS,
+// NewFaceProcessor creates a new ONNX-based face processor, eagerly
+// allocating one canvas, one blob and one input tensor per session. The
+// tensors wrap the Go slices zero-copy and are reused on every Run.
+func NewFaceProcessor(rt *ort.Runtime, env *ort.Env, detS, recS *ort.Session) (*FaceProcessorImpl, error) {
+	p := &FaceProcessorImpl{
+		rt:      rt,
+		env:     env,
+		detS:    detS,
+		recS:    recS,
+		canvas:  imaging.NewRGB(detInputSize, detInputSize),
+		crop:    imaging.NewRGB(recInputSize, recInputSize),
+		detBlob: make([]float32, 3*detInputSize*detInputSize),
+		recBlob: make([]float32, 3*recInputSize*recInputSize),
 	}
+
+	var err error
+	p.detTens, err = ort.NewTensorValue[float32](rt, p.detBlob, []int64{1, 3, detInputSize, detInputSize})
+	if err != nil {
+		return nil, fmt.Errorf("create detection input tensor: %w", err)
+	}
+	p.recTens, err = ort.NewTensorValue[float32](rt, p.recBlob, []int64{1, 3, recInputSize, recInputSize})
+	if err != nil {
+		return nil, fmt.Errorf("create recognition input tensor: %w", err)
+	}
+	return p, nil
 }
 
-// DetectAndCrop runs face detection on an image and returns a 112x112 face crop.
+// Close releases the preallocated ONNX input tensors. It is safe to call
+// more than once.
+func (p *FaceProcessorImpl) Close() {
+	p.detTens.Close()
+	p.recTens.Close()
+}
+
+// DetectAndCrop runs face detection on an image and returns a 112x112 face
+// crop. The second return value is the bounding box normalized to [0,1] in
+// (x1, y1, x2, y2) order.
 func (p *FaceProcessorImpl) DetectAndCrop(data []byte) (*domain.FaceCrop, error) {
 	img, err := imaging.DecodeRGB(data)
 	if err != nil {
 		return nil, err
 	}
+	return p.DetectAndCropFrame(img.W, img.H, img.Pix)
+}
 
-	cropImg, bbox, err := p.detectAndCrop112(img)
+// DetectAndCropFromRTSP reads one frame from an RTSP stream, detects a face,
+// and returns the crop with embedding.
+//
+// This is a placeholder — the actual RTSP reading is handled by the HTTP
+// handler / MQTT bridge. The processor only handles image → crop.
+func (p *FaceProcessorImpl) DetectAndCropFromRTSP(rtspURL string) (*domain.FaceCrop, error) {
+	return nil, fmt.Errorf("use DetectAndCrop with image data; RTSP reading is done by the caller")
+}
+
+// DetectAndCropFrame runs detection + alignment + recognition on a decoded
+// RGB frame (len(pix) >= w*h*3), reusing the preallocated canvas, blobs and
+// input tensors. pipelineMu is held for the whole pipeline.
+func (p *FaceProcessorImpl) DetectAndCropFrame(w, h int, pix []byte) (*domain.FaceCrop, error) {
+	p.pipelineMu.Lock()
+	defer p.pipelineMu.Unlock()
+
+	img := &imaging.RGBImage{W: w, H: h, Pix: pix}
+
+	hit, err := p.detectAndCrop112(img)
 	if err != nil {
 		return nil, err
 	}
 
-	// Encode crop to JPEG
-	encoded, err := imaging.EncodeJPEG(cropImg)
+	// Crop the winning box into the preallocated 112×112 recognition target.
+	cropped := imaging.NewRGB(recInputSize, recInputSize)
+	box := image.Rect(
+		int(math.Round(float64(hit.Box[0]))),
+		int(math.Round(float64(hit.Box[1]))),
+		int(math.Round(float64(hit.Box[2]))),
+		int(math.Round(float64(hit.Box[3]))),
+	)
+	if err := imaging.CropInto(cropped, img, box); err != nil {
+		return nil, fmt.Errorf("crop face region: %w", err)
+	}
+
+	// Encode crop to JPEG.
+	encoded, err := imaging.EncodeJPEG(cropped)
 	if err != nil {
 		return nil, fmt.Errorf("encode crop: %w", err)
 	}
 
-	// Extract embedding
-	embedding, err := p.extractEmbedding(cropImg)
+	// Extract embedding from the preallocated recognition blob.
+	if err := imaging.NCHWInto(p.recBlob, cropped, 127.5); err != nil {
+		return nil, fmt.Errorf("build embedding blob: %w", err)
+	}
+	embedding, err := p.runRecognize()
 	if err != nil {
 		return nil, fmt.Errorf("extract embedding: %w", err)
 	}
@@ -81,152 +157,55 @@ func (p *FaceProcessorImpl) DetectAndCrop(data []byte) (*domain.FaceCrop, error)
 	return &domain.FaceCrop{
 		Data:      encoded,
 		Embedding: embedding,
-		BBox:      bbox,
+		BBox:      hit.Box,
 	}, nil
-}
-
-// DetectAndCropFromRTSP reads one frame from an RTSP stream, detects a face,
-// and returns the crop with embedding.
-func (p *FaceProcessorImpl) DetectAndCropFromRTSP(rtspURL string) (*domain.FaceCrop, error) {
-	// This is a placeholder — the actual RTSP reading is handled by the
-	// HTTP handler / MQTT bridge. The processor only handles image → crop.
-	// For now, return an error indicating the caller must provide image data.
-	return nil, fmt.Errorf("use DetectAndCrop with image data; RTSP reading is done by the caller")
 }
 
 // --- Internal methods ---
 
-func (p *FaceProcessorImpl) detectAndCrop112(img *imaging.RGBImage) (*imaging.RGBImage, [4]float32, error) {
-	h, w := img.H, img.W
+// detectAndCrop112 pads img into the preallocated 640×640 canvas, runs the
+// SCRFD detector over the preallocated detection blob, decodes the best
+// detection via decodeBestFace and returns the hit. Caller must hold
+// pipelineMu.
+func (p *FaceProcessorImpl) detectAndCrop112(img *imaging.RGBImage) (*faceHit, error) {
+	w, h := img.W, img.H
 
-	canvas := imaging.NewRGB(detInputSize, detInputSize)
-	scale := imaging.PadSquareInto(canvas, img)
+	scale := imaging.PadSquareInto(p.canvas, img)
 	if scale == 0 {
-		return nil, [4]float32{}, fmt.Errorf("prepare detection input: invalid scaled dimensions for %dx%d image", w, h)
+		return nil, fmt.Errorf("prepare detection input: invalid scaled dimensions for %dx%d image", w, h)
 	}
 
-	blob := make([]float32, 3*detInputSize*detInputSize)
-	if err := imaging.NCHWInto(blob, canvas, 128.0); err != nil {
-		return nil, [4]float32{}, fmt.Errorf("build detection blob: %w", err)
+	if err := imaging.NCHWInto(p.detBlob, p.canvas, 128.0); err != nil {
+		return nil, fmt.Errorf("build detection blob: %w", err)
 	}
 
-	outs, err := p.runDetect(blob)
+	outs, err := p.runDetect()
 	if err != nil {
-		return nil, [4]float32{}, err
+		return nil, err
 	}
 
-	bestScore := float32(-1)
-	bestBox := [4]float32{}
-
-	for _, lvl := range detLevels {
-		scores, ok := outs[lvl.scoreName]
-		if !ok {
-			return nil, [4]float32{}, fmt.Errorf("missing detection output %q", lvl.scoreName)
-		}
-		regs, ok := outs[lvl.regName]
-		if !ok {
-			return nil, [4]float32{}, fmt.Errorf("missing detection output %q", lvl.regName)
-		}
-
-		hw := detInputSize / lvl.stride
-		numAnchors := 2 * hw * hw
-		if len(scores) != numAnchors || len(regs) != numAnchors*4 {
-			return nil, [4]float32{}, fmt.Errorf(
-				"detection output size mismatch for stride %d: scores=%d regs=%d",
-				lvl.stride, len(scores), len(regs))
-		}
-
-		stride := float32(lvl.stride)
-		for i := 0; i < numAnchors; i++ {
-			conf := scores[i]
-			if conf < detThreshold {
-				continue
-			}
-
-			cell := i / 2
-			row := cell / hw
-			col := cell % hw
-			cx := float32(col * lvl.stride)
-			cy := float32(row * lvl.stride)
-
-			x1 := cx - regs[i*4+0]*stride
-			y1 := cy - regs[i*4+1]*stride
-			x2 := cx + regs[i*4+2]*stride
-			y2 := cy + regs[i*4+3]*stride
-
-			if conf > bestScore {
-				bestScore = conf
-				bestBox = [4]float32{x1, y1, x2, y2}
-			}
+	// Convert the named output map into the structured detOutputs that
+	// decodeBestFace consumes, preserving the stride→level order.
+	var levels detOutputs
+	for i, lvl := range detLevels {
+		levels[i] = detLevelOutputs{
+			Scores: outs[lvl.scoreName],
+			Boxes:  outs[lvl.regName],
+			KPs:    outs[lvl.kpsName], // nil until Task 8 wires the kps outputs
 		}
 	}
 
-	if bestScore < detThreshold {
-		return nil, [4]float32{}, fmt.Errorf("no face detected above confidence threshold %v", detThreshold)
+	hit, err := decodeBestFace(levels, scale, w, h)
+	if err != nil {
+		return nil, err
 	}
-
-	// Map back to original frame
-	bestX1 := int(math.Round(float64(bestBox[0]) / scale))
-	bestY1 := int(math.Round(float64(bestBox[1]) / scale))
-	bestX2 := int(math.Round(float64(bestBox[2]) / scale))
-	bestY2 := int(math.Round(float64(bestBox[3]) / scale))
-
-	if bestX1 < 0 {
-		bestX1 = 0
-	}
-	if bestY1 < 0 {
-		bestY1 = 0
-	}
-	if bestX2 > w {
-		bestX2 = w
-	}
-	if bestY2 > h {
-		bestY2 = h
-	}
-
-	if bestX2 <= bestX1 || bestY2 <= bestY1 {
-		return nil, [4]float32{}, fmt.Errorf("invalid bounding box: x1=%d y1=%d x2=%d y2=%d", bestX1, bestY1, bestX2, bestY2)
-	}
-
-	cropped := imaging.NewRGB(recInputSize, recInputSize)
-	if err := imaging.CropInto(cropped, img, image.Rect(bestX1, bestY1, bestX2, bestY2)); err != nil {
-		return nil, [4]float32{}, fmt.Errorf("crop face region: %w", err)
-	}
-
-	normalizedBbox := [4]float32{
-		float32(bestX1) / float32(w),
-		float32(bestY1) / float32(h),
-		float32(bestX2) / float32(w),
-		float32(bestY2) / float32(h),
-	}
-
-	return cropped, normalizedBbox, nil
+	return hit, nil
 }
 
-func (p *FaceProcessorImpl) extractEmbedding(img *imaging.RGBImage) (domain.FaceEmbedding, error) {
-	if img.W != recInputSize || img.H != recInputSize {
-		return nil, fmt.Errorf("build embedding blob: expected %dx%dx3 image, got %dx%d",
-			recInputSize, recInputSize, img.W, img.H)
-	}
-
-	blob := make([]float32, 3*recInputSize*recInputSize)
-	if err := imaging.NCHWInto(blob, img, 127.5); err != nil {
-		return nil, fmt.Errorf("build embedding blob: %w", err)
-	}
-	return p.runRecognize(blob)
-}
-
-func (p *FaceProcessorImpl) runDetect(blob []float32) (map[string][]float32, error) {
-	p.inferMu.Lock()
-	defer p.inferMu.Unlock()
-
-	tensor, err := ort.NewTensorValue[float32](p.rt, blob, []int64{1, 3, detInputSize, detInputSize})
-	if err != nil {
-		return nil, fmt.Errorf("create detection input tensor: %w", err)
-	}
-	defer tensor.Close()
-
-	outs, err := p.detS.Run(context.Background(), map[string]*ort.Value{detInputName: tensor})
+// runDetect runs SCRFD over the preallocated detection input tensor.
+// Caller must hold pipelineMu.
+func (p *FaceProcessorImpl) runDetect() (map[string][]float32, error) {
+	outs, err := p.detS.Run(context.Background(), map[string]*ort.Value{detInputName: p.detTens})
 	if err != nil {
 		return nil, fmt.Errorf("run detection session: %w", err)
 	}
@@ -243,17 +222,10 @@ func (p *FaceProcessorImpl) runDetect(blob []float32) (map[string][]float32, err
 	return res, nil
 }
 
-func (p *FaceProcessorImpl) runRecognize(blob []float32) (domain.FaceEmbedding, error) {
-	p.inferMu.Lock()
-	defer p.inferMu.Unlock()
-
-	tensor, err := ort.NewTensorValue[float32](p.rt, blob, []int64{1, 3, recInputSize, recInputSize})
-	if err != nil {
-		return nil, fmt.Errorf("create recognition input tensor: %w", err)
-	}
-	defer tensor.Close()
-
-	outs, err := p.recS.Run(context.Background(), map[string]*ort.Value{recInputName: tensor})
+// runRecognize runs ArcFace over the preallocated recognition input tensor.
+// Caller must hold pipelineMu.
+func (p *FaceProcessorImpl) runRecognize() (domain.FaceEmbedding, error) {
+	outs, err := p.recS.Run(context.Background(), map[string]*ort.Value{recInputName: p.recTens})
 	if err != nil {
 		return nil, fmt.Errorf("run recognition session: %w", err)
 	}
@@ -292,7 +264,12 @@ func (p *FaceProcessorImpl) ExtractEmbedding(crop *domain.FaceCrop) (domain.Face
 	if err != nil {
 		return nil, fmt.Errorf("decode crop: %w", err)
 	}
-	return p.extractEmbedding(img)
+	p.pipelineMu.Lock()
+	defer p.pipelineMu.Unlock()
+	if err := imaging.NCHWInto(p.recBlob, img, 127.5); err != nil {
+		return nil, fmt.Errorf("build embedding blob: %w", err)
+	}
+	return p.runRecognize()
 }
 
 // round rounds to the nearest integer, halves away from zero.

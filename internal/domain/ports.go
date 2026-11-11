@@ -95,6 +95,9 @@ type FaceProcessor interface {
 	// face crop suitable for recognition. The second return value is the
 	// bounding box normalized to [0,1] in (x1, y1, x2, y2) order.
 	DetectAndCrop(data []byte) (*FaceCrop, error)
+	// DetectAndCropFrame runs detection + alignment + recognition on a decoded
+	// RGB frame (len(pix) >= w*h*3), avoiding a JPEG decode on the hot path.
+	DetectAndCropFrame(w, h int, pix []byte) (*FaceCrop, error)
 	// ExtractEmbedding takes a 112×112 face crop and returns a 512-dim
 	// embedding vector.
 	ExtractEmbedding(crop *FaceCrop) (FaceEmbedding, error)

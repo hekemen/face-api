@@ -1,6 +1,7 @@
 package di
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/rs/zerolog"
@@ -53,7 +54,10 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		cfg.Logger.Warn().Err(err).Msg("backfill users from audit failed")
 	}
 
-	processor := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession)
+	processor, err := service.NewFaceProcessor(cfg.RT, cfg.ORTEnv, cfg.DetSession, cfg.RecSession)
+	if err != nil {
+		return nil, fmt.Errorf("create face processor: %w", err)
+	}
 	faceService := service.New(userRepo, auditRepo, processor, cfg.Threshold)
 	// Apply any persisted threshold override (stored value wins over env/ctor).
 	faceService.WithSettingsRepo(settingsRepo)

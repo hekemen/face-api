@@ -24,6 +24,13 @@ func (m *mockProcessor) DetectAndCrop(data []byte) (*domain.FaceCrop, error) {
 	return m.crop, nil
 }
 
+func (m *mockProcessor) DetectAndCropFrame(w, h int, pix []byte) (*domain.FaceCrop, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.crop, nil
+}
+
 func (m *mockProcessor) ExtractEmbedding(crop *domain.FaceCrop) (domain.FaceEmbedding, error) {
 	if crop == nil {
 		return nil, fmt.Errorf("nil crop")

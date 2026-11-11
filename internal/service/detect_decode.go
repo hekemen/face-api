@@ -54,10 +54,17 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 		level := outs[l]
 		hw := detInputSize / lvl.stride
 		n := 2 * hw * hw
-		if len(level.Scores) != n || len(level.Boxes) != 4*n || len(level.KPs) != 10*n {
+		if len(level.Scores) != n || len(level.Boxes) != 4*n {
 			return nil, fmt.Errorf(
-				"decode best face: output size mismatch for stride %d: scores=%d boxes=%d kps=%d, want %d/%d/%d",
-				lvl.stride, len(level.Scores), len(level.Boxes), len(level.KPs), n, 4*n, 10*n)
+				"decode best face: output size mismatch for stride %d: scores=%d boxes=%d, want %d/%d",
+				lvl.stride, len(level.Scores), len(level.Boxes), n, 4*n)
+		}
+		// KPs are optional until the arcface5 alignment path wires them
+		// (Task 8). When present they must be exactly 10 per anchor.
+		if len(level.KPs) != 0 && len(level.KPs) != 10*n {
+			return nil, fmt.Errorf(
+				"decode best face: output size mismatch for stride %d: kps=%d, want %d",
+				lvl.stride, len(level.KPs), 10*n)
 		}
 
 		stride := float32(lvl.stride)
@@ -92,18 +99,21 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 				clampToFrame(y2, scale, frameH),
 			}
 
-			hasKPs := true
-			for j := 0; j < 5; j++ {
-				kx := mapToFrame(cx+level.KPs[i*10+2*j]*stride, scale)
-				ky := mapToFrame(cy+level.KPs[i*10+2*j+1]*stride, scale)
-				best.KPs[j] = [2]float32{kx, ky}
-				// NaN fails both comparisons, so this rejects non-finite
-				// coordinates as well as ones outside the frame.
-				if !(kx >= 0 && kx <= frameW && ky >= 0 && ky <= frameH) {
-					hasKPs = false
+			best.HasKPs = false
+			if len(level.KPs) > 0 {
+				hasKPs := true
+				for j := 0; j < 5; j++ {
+					kx := mapToFrame(cx+level.KPs[i*10+2*j]*stride, scale)
+					ky := mapToFrame(cy+level.KPs[i*10+2*j+1]*stride, scale)
+					best.KPs[j] = [2]float32{kx, ky}
+					// NaN fails both comparisons, so this rejects non-finite
+					// coordinates as well as ones outside the frame.
+					if !(kx >= 0 && kx <= frameW && ky >= 0 && ky <= frameH) {
+						hasKPs = false
+					}
 				}
+				best.HasKPs = hasKPs
 			}
-			best.HasKPs = hasKPs
 		}
 	}
 
