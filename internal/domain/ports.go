@@ -2,8 +2,13 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrNoFace reports that no detection cleared the confidence threshold.
+// Callers use errors.Is to tell an empty frame from a processing failure.
+var ErrNoFace = errors.New("no face detected")
 
 // Repository ports — interfaces the service depends on for data access.
 
