@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"image"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,19 +31,45 @@ import (
 const (
 	detModelPath = "../../models/scrfd_500m.onnx"
 	recModelPath = "../../models/arcface_w600k_mbf.onnx"
-	faceFixture  = "../../test_hopkins_1.jpg"
-	// samePersonSecondFixture is the same person as faceFixture, in a
-	// different photograph.
-	samePersonSecondFixture = "../../test_hopkins_2.jpg"
-	// strangerFixture is a different person entirely.
-	strangerFixture = "../../test_stranger.jpg"
+
+	// The fixtures are downloaded on demand, the same way the e2e suite
+	// fetches its test images: the repository ignores *.jpg, so they cannot
+	// be committed.
+	faceFixtureURL             = "https://raw.githubusercontent.com/davidsandberg/facenet/master/data/images/Anthony_Hopkins_0001.jpg"
+	samePersonSecondFixtureURL = "https://raw.githubusercontent.com/davidsandberg/facenet/master/data/images/Anthony_Hopkins_0002.jpg"
+	strangerFixtureURL         = "https://raw.githubusercontent.com/ageitgey/face_recognition/master/examples/biden.jpg"
 )
+
+// downloadFixture fetches a test photo into a temporary directory and
+// returns its path. It skips the test when the download fails, so an
+// offline run does not fail the suite.
+func downloadFixture(t *testing.T, url string) string {
+	t.Helper()
+	name := filepath.Base(url)
+	dest := filepath.Join(t.TempDir(), name)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Skipf("download %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("download %s: HTTP %d", url, resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Skipf("read %s: %v", url, err)
+	}
+	if err := os.WriteFile(dest, data, 0644); err != nil {
+		t.Skipf("write %s: %v", dest, err)
+	}
+	return dest
+}
 
 // newRealProcessor builds a processor backed by the real ONNX models, or
 // skips the test when they are not available.
 func newRealProcessor(t *testing.T) *service.FaceProcessorImpl {
 	t.Helper()
-	for _, p := range []string{detModelPath, recModelPath, faceFixture} {
+	for _, p := range []string{detModelPath, recModelPath} {
 		if _, err := os.Stat(p); err != nil {
 			t.Skipf("missing %s: %v", p, err)
 		}
@@ -143,7 +172,7 @@ func TestScanBurstMatchesRealFaceFromMockCamera(t *testing.T) {
 	proc := newRealProcessor(t)
 
 	// Enroll from the fixture so the enrollment is a real embedding.
-	photo, err := os.ReadFile(faceFixture)
+	photo, err := os.ReadFile(downloadFixture(t, faceFixtureURL))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -218,11 +247,11 @@ func TestScanBurstRejectsStrangerFromMockCamera(t *testing.T) {
 	proc := newRealProcessor(t)
 
 	// Enroll Anthony; serve a different person.
-	photo, err := os.ReadFile(faceFixture)
+	photo, err := os.ReadFile(downloadFixture(t, faceFixtureURL))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	other, err := os.ReadFile(strangerFixture)
+	other, err := os.ReadFile(downloadFixture(t, strangerFixtureURL))
 	if err != nil {
 		t.Skipf("missing stranger fixture: %v", err)
 	}
@@ -282,11 +311,11 @@ func TestScanBurstRejectsStrangerFromMockCamera(t *testing.T) {
 func TestSamePersonDifferentPhotoScoresHigh(t *testing.T) {
 	proc := newRealProcessor(t)
 
-	photo, err := os.ReadFile(faceFixture)
+	photo, err := os.ReadFile(downloadFixture(t, faceFixtureURL))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	second, err := os.ReadFile(samePersonSecondFixture)
+	second, err := os.ReadFile(downloadFixture(t, samePersonSecondFixtureURL))
 	if err != nil {
 		t.Skipf("missing second fixture: %v", err)
 	}
