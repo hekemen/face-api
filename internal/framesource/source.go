@@ -20,8 +20,6 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
-	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmjpeg"
 	govidh264 "github.com/liqmix/govid/h264"
 
 	"h2hsecure.com/face/internal/imaging"
@@ -206,9 +204,6 @@ selected:
 		c.OnPacketRTP(media, forma.(*format.H264), func(pkt *rtp.Packet) {
 			nalus, err := depacketizer.Decode(pkt)
 			if err != nil {
-				if !errors.Is(err, rtph264.ErrMorePacketsNeeded) {
-					return
-				}
 				return
 			}
 			avc := make([]byte, 0, 1024)
@@ -233,10 +228,6 @@ selected:
 		c.OnPacketRTP(media, forma.(*format.MJPEG), func(pkt *rtp.Packet) {
 			jpegData, err := decoder.Decode(pkt)
 			if err != nil {
-				if !errors.Is(err, rtpmjpeg.ErrMorePacketsNeeded) &&
-					!errors.Is(err, rtpmjpeg.ErrNonStartingPacketAndNoPrevious) {
-					return
-				}
 				return
 			}
 			if jpegData == nil {

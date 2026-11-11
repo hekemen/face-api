@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,9 @@ func (f *fakeFaceService) SetThreshold(v float32) error {
 	f.threshold = v
 	return nil
 }
+func (f *fakeFaceService) ScanBurst(ctx context.Context) (*domain.StreamCheckResult, error) {
+	return &domain.StreamCheckResult{Status: "ok"}, nil
+}
 
 // TestHandleUIAuditRendersWithoutBlockingServiceCalls verifies the audit page
 // renders without calling RecentAudit or ListUnmatched: the page renders
@@ -112,7 +116,7 @@ func TestHandleUIAuditRendersWithoutBlockingServiceCalls(t *testing.T) {
 // TestAuditPageFaceModalImageNoSrcResetLoop verifies the audit page's
 // face-modal image does not use an onerror handler that resets src to the
 // empty string. An <img src=""> resolves to the document's own URL; an onerror
-// that sets src='' again re-triggers the image load on every error, an infinite
+// that sets src=” again re-triggers the image load on every error, an infinite
 // loop that keeps the document's load event from ever firing. The symptom was
 // the audit page sticking in the browser "loading" state (stop button visible)
 // even though every API call and the client-side render succeeded.

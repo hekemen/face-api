@@ -157,7 +157,7 @@ func main() {
 	// 4. Set up MQTT bridge if configured
 	var mqttBridge *mqtt.Bridge
 	if brokerURL := os.Getenv("MQTT_BROKER_URL"); brokerURL != "" {
-		queueDepth := 16
+		queueDepth := 1
 		if qd := os.Getenv("MQTT_QUEUE_DEPTH"); qd != "" {
 			if d, err := strconv.Atoi(qd); err == nil && d > 0 {
 				queueDepth = d

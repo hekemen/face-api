@@ -242,7 +242,10 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 		}
 	}
 
-	matched := bestScore >= s.threshold
+	s.mu.Lock()
+	threshold := s.threshold
+	s.mu.Unlock()
+	matched := bestScore >= threshold
 	result := &domain.RecognitionResult{
 		OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
 		Name:              "Unknown",
@@ -283,11 +286,31 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 
 	crop, err := s.processor.DetectAndCrop(imageData)
 	if err != nil {
-		reason := "No face detected"
-		// For RTSP connection errors, the caller should handle it.
-		// Connection errors do NOT write an audit entry.
+		if errors.Is(err, domain.ErrNoFace) {
+			// No face: store the captured camera frame (downscaled) so the audit
+			// entry can show what the camera saw. HasFace stays false because the
+			// status is no_face, so the listing keeps the "View frame" button.
+			frameB64 := noFaceFrameImage(imageData)
+			_ = s.audit.Append([]domain.AuditEntry{{
+				Time:       time.Now(),
+				Endpoint:   "stream-check",
+				Name:       "",
+				Similarity: 0,
+				Matched:    false,
+				Status:     domain.AuditStatusNoFace,
+				DurationMs: time.Since(start).Milliseconds(),
+				FaceImage:  frameB64,
+			}})
+			s.logf("no face detected", "timestamp", time.Now().Format(time.RFC3339))
+			return &domain.StreamCheckResult{
+				OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
+				Status:            "not ok",
+				Reason:            "No face detected",
+			}, nil
+		}
 		if isConnectionError(err) {
-			reason = "Failed to connect to RTSP stream"
+			// Connection error: return not ok without audit entry.
+			reason := "Failed to connect to RTSP stream"
 			s.logf("no face detected", "reason", reason, "timestamp", time.Now().Format(time.RFC3339))
 			return &domain.StreamCheckResult{
 				OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
@@ -295,26 +318,8 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 				Reason:            reason,
 			}, nil
 		}
-		// No-face: store the captured camera frame (downscaled) so the audit
-		// entry can show what the camera saw. HasFace stays false because the
-		// status is no_face, so the listing keeps the "View frame" button.
-		frameB64 := noFaceFrameImage(imageData)
-		_ = s.audit.Append([]domain.AuditEntry{{
-			Time:       time.Now(),
-			Endpoint:   "stream-check",
-			Name:       "",
-			Similarity: 0,
-			Matched:    false,
-			Status:     domain.AuditStatusNoFace,
-			DurationMs: time.Since(start).Milliseconds(),
-			FaceImage:  frameB64,
-		}})
-		s.logf("no face detected", "timestamp", time.Now().Format(time.RFC3339))
-		return &domain.StreamCheckResult{
-			OperationDuration: domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()},
-			Status:            "not ok",
-			Reason:            reason,
-		}, nil
+		// Any other error is a processing failure.
+		return nil, fmt.Errorf("face detection: %w", err)
 	}
 
 	s.logf("face found", "timestamp", time.Now().Format(time.RFC3339))
@@ -338,7 +343,10 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 		}
 	}
 
-	matched := highestScore >= s.threshold
+	s.mu.Lock()
+	threshold := s.threshold
+	s.mu.Unlock()
+	matched := highestScore >= threshold
 	dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
 
 	s.logf("validation result", "name", bestName, "similarity", highestScore, "matched", matched, "timestamp", time.Now().Format(time.RFC3339))
@@ -510,8 +518,6 @@ outer:
 			continue // processing hiccup; do not end the burst
 		}
 
-		faceSeen = true
-
 		// Best match across all enrolled users.
 		var sampleName string
 		var sampleScore float32 = -1
@@ -567,7 +573,7 @@ outer:
 			Reason:            "Face processing failed",
 		}, nil
 	}
-	if faceSeen {
+	if faceSeen && bestCrop != nil {
 		sim := bestScore
 		if sim < 0 {
 			sim = 0
@@ -596,7 +602,8 @@ outer:
 		}, nil
 	}
 
-	// No face seen at all: record a no_face entry with a downscaled frame.
+	// No face seen at all, or face seen but no users to match against:
+	// record a no_face entry with a downscaled frame.
 	frameB64 := noFaceFrameFromRGB(w, h, scratch[:w*h*3])
 	_ = s.audit.Append([]domain.AuditEntry{{
 		Time:       time.Now(),

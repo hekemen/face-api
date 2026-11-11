@@ -226,7 +226,7 @@ func TestCheckStreamImageNoFaceWritesAuditEntry(t *testing.T) {
 
 	// Processor returns no-face error.
 	proc := &mockProcessor{
-		err: fmt.Errorf("no face detected within 3 seconds"),
+		err: domain.ErrNoFace,
 	}
 
 	svc := New(users, audit, proc, 0.45)
@@ -275,7 +275,7 @@ func TestCheckStreamImageNoFaceStoresFrameImage(t *testing.T) {
 
 	// Processor returns no-face error.
 	proc := &mockProcessor{
-		err: fmt.Errorf("no face detected within 3 seconds"),
+		err: domain.ErrNoFace,
 	}
 
 	svc := New(users, audit, proc, 0.45)
@@ -443,7 +443,7 @@ func TestCheckStreamImageNoFaceNotConnectionError(t *testing.T) {
 
 	// Processor returns a generic "no face" error (not connection-related).
 	proc := &mockProcessor{
-		err: fmt.Errorf("no face detected within 3 seconds"),
+		err: domain.ErrNoFace,
 	}
 
 	svc := New(users, audit, proc, 0.45)

@@ -159,15 +159,15 @@ func (a *FaceAPI) Start(ctx context.Context) {
 	go a.source.Run(ctx)
 }
 
-// Stop cancels the source Run goroutine and waits for it to finish.
+// Stop cancels the source Run goroutine (if a frame source is configured).
 func (a *FaceAPI) Stop() {
 	if a.startCancel != nil {
 		a.startCancel()
 	}
 }
 
-// Close stops the source and closes the processor. It is safe to call more
-// than once.
+// Close stops the source goroutine (if a frame source is configured).
+// It is safe to call more than once.
 func (a *FaceAPI) Close() {
 	a.Stop()
 }

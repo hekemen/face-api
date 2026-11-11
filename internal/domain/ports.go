@@ -178,6 +178,9 @@ type FaceService interface {
 	// SetThreshold updates the face-match threshold. The value must be in
 	// (0, 1). It is persisted before the in-memory value is updated.
 	SetThreshold(v float32) error
+	// ScanBurst continuously samples buffered sub-stream frames for up to the
+	// burst window and returns the first match at or above the threshold.
+	ScanBurst(ctx context.Context) (*StreamCheckResult, error)
 }
 
 // --- Response types ---
