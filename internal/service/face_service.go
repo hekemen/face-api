@@ -406,9 +406,10 @@ func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckRes
 	}
 
 	// Derive a bounded deadline from the burst window so that MQTT Stop() can
-	// abort an in-flight burst.
-	ctx, cancel := context.WithTimeout(ctx, s.burstWindow)
-	defer cancel()
+	// abort an in-flight burst. The MQTT context (ctx) is used for
+	// cancellation, while windowCtx bounds the scan window.
+	windowCtx, windowCancel := context.WithTimeout(ctx, s.burstWindow)
+	defer windowCancel()
 
 	// Snapshot the threshold once; never hold s.mu across inference.
 	s.mu.Lock()
@@ -423,15 +424,16 @@ func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckRes
 
 	start := time.Now()
 	var (
-		w, h        int
-		scratch     []byte
-		lastSeq     uint64
-		lastSample  time.Time
-		bestScore   float32 = -1
-		bestName    string
-		bestCrop    *domain.FaceCrop
-		faceSeen    bool
-		firstSample = true
+		w, h             int
+		scratch          []byte
+		lastSeq          uint64
+		lastSample       time.Time
+		bestScore        float32 = -1
+		bestName         string
+		bestCrop         *domain.FaceCrop
+		faceSeen         bool
+		samplesProcessed int
+		firstSample      = true
 	)
 	w, h = s.frameSource.Dims()
 	if w > 0 && h > 0 {
@@ -451,6 +453,8 @@ outer:
 			if elapsed := time.Since(lastSample); elapsed < s.burstSampleInterval {
 				select {
 				case <-ctx.Done():
+					return s.notOkResult(start, "scan cancelled", 0, nil, false)
+				case <-windowCtx.Done():
 					break outer
 				case <-time.After(s.burstSampleInterval - elapsed):
 				}
@@ -470,6 +474,8 @@ outer:
 		for {
 			select {
 			case <-ctx.Done():
+				return s.notOkResult(start, "scan cancelled", 0, nil, false)
+			case <-windowCtx.Done():
 				break outer
 			case <-time.After(20 * time.Millisecond):
 			}
@@ -493,10 +499,14 @@ outer:
 		}
 
 		crop, err := s.processor.DetectAndCropFrame(w, h, scratch[:w*h*3])
-		if err != nil {
-			if errors.Is(err, domain.ErrNoFace) {
-				continue // no face this sample; keep scanning
-			}
+		switch {
+		case err == nil:
+			samplesProcessed++
+			faceSeen = true
+		case errors.Is(err, domain.ErrNoFace):
+			samplesProcessed++
+			continue // no face this sample; keep scanning
+		default:
 			continue // processing hiccup; do not end the burst
 		}
 
@@ -549,6 +559,14 @@ outer:
 
 	// Deadline reached. Decide the result from the best sample seen.
 	dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+	if samplesProcessed == 0 {
+		// No successful inference at all: processing failure, not an empty frame.
+		return &domain.StreamCheckResult{
+			OperationDuration: dur,
+			Status:            "not ok",
+			Reason:            "Face processing failed",
+		}, nil
+	}
 	if faceSeen {
 		sim := bestScore
 		if sim < 0 {

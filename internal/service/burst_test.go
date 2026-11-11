@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,8 +15,10 @@ import (
 
 type burstProcessor struct {
 	crop      *domain.FaceCrop
+	crops     []*domain.FaceCrop
 	errs      []error
-	callCount int
+	callCount int32
+	blockCh   chan struct{}
 }
 
 func (m *burstProcessor) DetectAndCrop(data []byte) (*domain.FaceCrop, error) {
@@ -22,12 +26,20 @@ func (m *burstProcessor) DetectAndCrop(data []byte) (*domain.FaceCrop, error) {
 }
 
 func (m *burstProcessor) DetectAndCropFrame(w, h int, pix []byte) (*domain.FaceCrop, error) {
-	m.callCount++
-	idx := m.callCount - 1
-	if idx < len(m.errs) && m.errs[idx] != nil {
+	idx := atomic.AddInt32(&m.callCount, 1) - 1
+	if idx < int32(len(m.errs)) && m.errs[idx] != nil {
 		return nil, m.errs[idx]
 	}
-	return m.crop, nil
+	if idx < int32(len(m.crops)) {
+		return m.crops[idx], nil
+	}
+	if m.blockCh != nil {
+		<-m.blockCh
+	}
+	if m.crop != nil {
+		return m.crop, nil
+	}
+	return nil, domain.ErrNoFace
 }
 
 func (m *burstProcessor) ExtractEmbedding(crop *domain.FaceCrop) (domain.FaceEmbedding, error) {
@@ -66,15 +78,18 @@ func (m *burstUserRepo) ListAll() ([]*domain.User, error) {
 }
 
 type burstSource struct {
-	w, h     int
-	seq      uint64
-	fixedSeq bool
-	emitErr  error
+	w, h       int
+	seq        uint64
+	fixedSeq   bool
+	alwaysFail bool
 }
 
 func (s *burstSource) Dims() (int, int) { return s.w, s.h }
 
 func (s *burstSource) Latest(dst []byte) (int, int, uint64, time.Time, bool) {
+	if s.alwaysFail {
+		return s.w, s.h, 0, time.Time{}, false
+	}
 	if !s.fixedSeq {
 		s.seq++
 	}
@@ -187,8 +202,8 @@ func TestScanBurstSkipsUnchangedSeq(t *testing.T) {
 	if _, err := s.ScanBurst(context.Background()); err != nil {
 		t.Fatalf("ScanBurst: %v", err)
 	}
-	if proc.callCount != 1 {
-		t.Fatalf("processor called %d times, want 1 (unchanged seq must be skipped)", proc.callCount)
+	if atomic.LoadInt32(&proc.callCount) != 1 {
+		t.Fatalf("processor called %d times, want 1 (unchanged seq must be skipped)", atomic.LoadInt32(&proc.callCount))
 	}
 }
 
@@ -216,5 +231,230 @@ func TestScanBurstNoFrameSource(t *testing.T) {
 	_, err := s.ScanBurst(context.Background())
 	if err == nil {
 		t.Fatal("expected error when frame source is not configured")
+	}
+}
+
+func TestScanBurstDeadlineReturnsBest(t *testing.T) {
+	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	crop1 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 1, 0, 0}}     // score 0.0
+	crop2 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0.6, 0.8, 0, 0}} // score 0.6
+	crop3 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 0, 1, 0}}     // score 0.0
+	proc := &burstProcessor{crops: []*domain.FaceCrop{crop1, crop2, crop3}}
+	src := &burstSource{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.7).WithFrameSource(src).WithBurst(150*time.Millisecond, 20*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Status != "not ok" {
+		t.Fatalf("Status = %q, want not ok", res.Status)
+	}
+	if res.Matched {
+		t.Error("Matched = true, want false")
+	}
+	if res.Name != "alice" {
+		t.Errorf("Name = %q, want alice", res.Name)
+	}
+	if res.Similarity < 0.55 || res.Similarity > 0.65 {
+		t.Errorf("Similarity = %v, want ~0.6 (best of 0.3, 0.6, 0.2)", res.Similarity)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("expected 1 audit row, got %d", len(audit.entries))
+	}
+	e := audit.entries[0]
+	if e.Status != domain.AuditStatusNotMatched {
+		t.Errorf("status = %q, want not_matched", e.Status)
+	}
+	if len(e.Embedding) != 4 || e.Embedding[0] != 0.6 || e.Embedding[1] != 0.8 {
+		t.Errorf("embedding = %v, want best sample (0.6, 0.8, 0, 0)", e.Embedding)
+	}
+}
+
+func TestScanBurstAllNoFaceWritesNoFaceRow(t *testing.T) {
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
+	proc := &burstProcessor{errs: []error{domain.ErrNoFace, domain.ErrNoFace, domain.ErrNoFace}}
+	src := &burstSource{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Status != "not ok" {
+		t.Fatalf("Status = %q, want not ok", res.Status)
+	}
+	if res.Reason != "No face detected" {
+		t.Errorf("Reason = %q, want No face detected", res.Reason)
+	}
+	if res.Matched {
+		t.Error("Matched = true, want false")
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("expected 1 audit row, got %d", len(audit.entries))
+	}
+	e := audit.entries[0]
+	if e.Status != domain.AuditStatusNoFace {
+		t.Errorf("status = %q, want no_face", e.Status)
+	}
+	if e.FaceImage == "" {
+		t.Error("FaceImage should be non-empty for no_face row")
+	}
+}
+
+func TestScanBurstProcessorErrors(t *testing.T) {
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
+	errs := []error{errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
+		errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
+		errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
+		errors.New("processing error"), errors.New("processing error"), errors.New("processing error")}
+	proc := &burstProcessor{errs: errs}
+	src := &burstSource{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(100*time.Millisecond, 10*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Status != "not ok" {
+		t.Fatalf("Status = %q, want not ok", res.Status)
+	}
+	if res.Reason != "Face processing failed" {
+		t.Errorf("Reason = %q, want Face processing failed", res.Reason)
+	}
+	if res.Matched {
+		t.Error("Matched = true, want false")
+	}
+	if len(audit.entries) != 0 {
+		t.Fatalf("expected 0 audit rows, got %d", len(audit.entries))
+	}
+}
+
+type fakeRTSPReader struct {
+	frame     []byte
+	err       error
+	callCount int
+}
+
+func (f *fakeRTSPReader) ReadFrame(url string, timeout time.Duration) ([]byte, error) {
+	f.callCount++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.frame, nil
+}
+
+func TestScanBurstFallbackWhenNoFrames(t *testing.T) {
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
+	crop := &domain.FaceCrop{Embedding: alice.Embeddings[0]}
+	proc := &burstProcessor{crop: crop}
+	// Frame source never produces a frame (cold buffer).
+	src := &burstSource{w: 640, h: 480, alwaysFail: true}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).
+		WithFrameSource(src).
+		WithBurst(100*time.Millisecond, 10*time.Millisecond).
+		WithStreamURL("rtsp://fake")
+	rtspReader := &fakeRTSPReader{frame: []byte("frame")}
+	s.rtspReader = rtspReader
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Status != "ok" {
+		t.Fatalf("Status = %q, want ok", res.Status)
+	}
+	if res.Name != "alice" {
+		t.Errorf("Name = %q, want alice", res.Name)
+	}
+	if rtspReader.callCount != 1 {
+		t.Fatalf("CheckStream called %d times, want 1 (single fallback)", rtspReader.callCount)
+	}
+}
+
+func TestScanBurstCancel(t *testing.T) {
+	emb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
+	crop := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 1, 0, 0}} // score 0.0
+	proc := &burstProcessor{crop: crop}
+	src := &burstSource{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(5*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *domain.StreamCheckResult, 1)
+	go func() {
+		res, _ := s.ScanBurst(ctx)
+		done <- res
+	}()
+
+	// Wait for the first sample to be processed.
+	for atomic.LoadInt32(&proc.callCount) < 1 {
+		time.Sleep(1 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if res.Status != "not ok" {
+			t.Fatalf("Status = %q, want not ok", res.Status)
+		}
+		if res.Matched {
+			t.Error("Matched = true, want false")
+		}
+		if len(audit.entries) != 0 {
+			t.Fatalf("expected 0 audit rows for aborted burst, got %d", len(audit.entries))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ScanBurst did not return after cancel")
+	}
+}
+
+func TestScanBurstDoesNotHoldServiceMutex(t *testing.T) {
+	emb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
+	crop := &domain.FaceCrop{Embedding: emb}
+	blockCh := make(chan struct{})
+	proc := &burstProcessor{crop: crop, blockCh: blockCh}
+	src := &burstSource{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameSource(src).WithBurst(5*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *domain.StreamCheckResult, 1)
+	go func() {
+		res, _ := s.ScanBurst(ctx)
+		done <- res
+	}()
+
+	// Wait for the processor to block on the first DetectAndCropFrame.
+	for atomic.LoadInt32(&proc.callCount) < 1 {
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	// GetSettings must return quickly: ScanBurst does not hold s.mu during inference.
+	start := time.Now()
+	if _, err := s.GetSettings(); err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("GetSettings took %v while scan held pipeline mutex", elapsed)
+	}
+
+	cancel()
+	close(blockCh)
+	if res := <-done; res == nil {
+		t.Fatal("ScanBurst returned nil result")
 	}
 }
