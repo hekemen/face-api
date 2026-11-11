@@ -105,7 +105,6 @@ func (g *Grabber) Grab(ctx context.Context) (w, h int, pix []byte, err error) {
 	type frameResult struct {
 		w, h int
 		pix  []byte
-		err  error
 	}
 	frameCh := make(chan frameResult, 1)
 
@@ -180,9 +179,6 @@ func (g *Grabber) Grab(ctx context.Context) (w, h int, pix []byte, err error) {
 	case <-ctx.Done():
 		return 0, 0, nil, ctx.Err()
 	case res := <-frameCh:
-		if res.err != nil {
-			return 0, 0, nil, res.err
-		}
 		return res.w, res.h, res.pix, nil
 	}
 }
