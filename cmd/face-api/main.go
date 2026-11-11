@@ -16,6 +16,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	"h2hsecure.com/face/internal/di"
+	"h2hsecure.com/face/internal/domain"
 	"h2hsecure.com/face/internal/mqtt"
 )
 
@@ -144,7 +145,9 @@ func main() {
 			RTSPURL:         os.Getenv("RTSP_URL"),
 		}
 
-		mqttBridge, err = mqtt.New(mqttCfg, faceAPI.CheckStream)
+		mqttBridge, err = mqtt.New(mqttCfg, func(ctx context.Context) (*domain.StreamCheckResult, error) {
+			return faceAPI.CheckStream(mqttCfg.RTSPURL)
+		})
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create MQTT bridge")
 		}

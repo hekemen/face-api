@@ -15,8 +15,9 @@ import (
 )
 
 // CheckFunc is the stream-check function that the Bridge calls when
-// a trigger message arrives. It returns the result of the check.
-type CheckFunc func(rtspURL string) (*domain.StreamCheckResult, error)
+// a trigger message arrives. It receives the bridge context so MQTT
+// cancellation aborts an in-flight burst, and returns the check result.
+type CheckFunc func(ctx context.Context) (*domain.StreamCheckResult, error)
 
 // Config holds MQTT configuration.
 type Config struct {
@@ -64,7 +65,7 @@ func New(cfg Config, check CheckFunc) (*Bridge, error) {
 		cfg.DiscoveryPrefix = "homeassistant"
 	}
 	if cfg.QueueDepth <= 0 {
-		cfg.QueueDepth = 16
+		cfg.QueueDepth = 1
 	}
 
 	b := &Bridge{
@@ -205,9 +206,8 @@ func (b *Bridge) worker() {
 		case <-b.done:
 			return
 		case <-b.queue:
-			rtspURL := b.rtspURL
-			b.log.Info().Str("rtsp_url", rtspURL).Msg("processing trigger")
-			result, err := b.check(rtspURL)
+			b.log.Info().Msg("processing trigger")
+			result, err := b.check(b.ctx)
 			if err != nil {
 				result = &domain.StreamCheckResult{
 					Status: "not ok",
@@ -224,11 +224,11 @@ func (b *Bridge) worker() {
 
 			// Publish matched state with face image thumbnail.
 			matchedPayload := map[string]any{
-				"matched":     result.Matched,
-				"name":        result.Name,
-				"similarity":  result.Similarity,
-				"last_scan":   time.Now().UTC().Format(time.RFC3339),
-				"face_image":  result.FaceImage,
+				"matched":    result.Matched,
+				"name":       result.Name,
+				"similarity": result.Similarity,
+				"last_scan":  time.Now().UTC().Format(time.RFC3339),
+				"face_image": result.FaceImage,
 			}
 			matchedJSON, _ := json.Marshal(matchedPayload)
 			matchedTopic := b.cfg.BaseTopic + "/matched"
