@@ -51,7 +51,12 @@ type Source struct {
 	stream streamFunc
 
 	// frames counts published frames; used to report the achieved frame rate.
-	frames      atomic.Int64
+	frames atomic.Int64
+	// framesAtLastLog is the value of frames at the previous rate report, so
+	// the reported rate is the delta over the interval, not the cumulative
+	// average.
+	framesAtLastLog atomic.Int64
+	// lastRateLog is the timestamp (unix nanos) of the previous rate report.
 	lastRateLog atomic.Int64
 }
 
@@ -124,9 +129,15 @@ func (s *Source) Run(ctx context.Context) error {
 // from the stream goroutine, so it must not block for long.
 func (s *Source) publish(img image.Image) {
 	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
 	s.buf.Publish(func(dst *imaging.RGBImage) {
-		dst.W, dst.H = b.Dx(), b.Dy()
-		dst.Pix = make([]byte, dst.W*dst.H*3)
+		dst.W, dst.H = w, h
+		// Reuse the spare buffer's pixel storage. At 5 MP a fresh allocation
+		// per frame is 14.7 MB, which at the camera's frame rate is >100 MB/s
+		// of garbage and starves the decoder of CPU on a small host.
+		if len(dst.Pix) != w*h*3 {
+			dst.Pix = make([]byte, w*h*3)
+		}
 		if !imaging.ConvertInto(dst, img) {
 			s.log.Error().Msg("framesource: convert into failed")
 		}
@@ -134,8 +145,12 @@ func (s *Source) publish(img image.Image) {
 	s.reportRate()
 }
 
-// reportRate logs the achieved frame rate every 5 seconds. It is the only way
-// to tell a slow decoder from a silent camera on a small host.
+// rateReportInterval is how often reportRate logs the achieved frame rate.
+// It is a variable so tests can shorten it.
+var rateReportInterval = 5 * time.Second
+
+// reportRate logs the achieved frame rate every rateReportInterval. It is the
+// only way to tell a slow decoder from a silent camera on a small host.
 func (s *Source) reportRate() {
 	n := s.frames.Add(1)
 	now := time.Now()
@@ -144,15 +159,20 @@ func (s *Source) reportRate() {
 		s.lastRateLog.Store(now.UnixNano())
 		return
 	}
-	if now.UnixNano()-last < int64(5*time.Second) {
+	if now.UnixNano()-last < int64(rateReportInterval) {
 		return
 	}
 	if !s.lastRateLog.CompareAndSwap(last, now.UnixNano()) {
 		return
 	}
 	elapsed := now.Sub(time.Unix(0, last)).Seconds()
+	// n is cumulative; the rate over the interval is the delta. Using the
+	// cumulative count here reports a rate that grows without bound, which
+	// makes a healthy stream look like it is accelerating.
+	delta := n - s.framesAtLastLog.Load()
+	s.framesAtLastLog.Store(n)
 	s.log.Info().
-		Float64("fps", float64(n)/elapsed).
+		Float64("fps", float64(delta)/elapsed).
 		Int64("frames", n).
 		Dur("lag", now.Sub(s.buf.LastAt())).
 		Msg("rtsp frame rate")

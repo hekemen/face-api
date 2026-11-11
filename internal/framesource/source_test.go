@@ -3,6 +3,7 @@ package framesource
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
@@ -278,5 +279,80 @@ func TestSourceRunReturnsOnCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s after cancel")
+	}
+}
+
+// TestReportRateUsesDelta checks that the reported fps is the rate over the
+// last interval, not the cumulative average. The cumulative variant reports a
+// rate that climbs without bound and makes a healthy stream look like it is
+// accelerating.
+func TestReportRateUsesDelta(t *testing.T) {
+	prev := rateReportInterval
+	rateReportInterval = 20 * time.Millisecond
+	defer func() { rateReportInterval = prev }()
+
+	var logBuf threadSafeBuf
+	log := zerolog.New(&logBuf).With().Timestamp().Logger()
+	s := New("rtsp://fake/stream", log)
+
+	// First publish only arms the timer.
+	s.publish(grayImage(4, 4, color.RGBA{R: 1, G: 2, B: 3, A: 255}))
+
+	// Publish at a steady 10ms cadence for ~200ms: ~20 frames.
+	const n = 20
+	for i := 0; i < n; i++ {
+		time.Sleep(10 * time.Millisecond)
+		s.publish(grayImage(4, 4, color.RGBA{R: 1, G: 2, B: 3, A: 255}))
+	}
+
+	out := logBuf.String()
+	if !strings.Contains(out, "rtsp frame rate") {
+		t.Fatalf("expected a rate report, got: %s", out)
+	}
+
+	// Parse the reported fps: with the delta fix it must be near 100 fps
+	// (10ms cadence), not near 10000 (cumulative count / tiny elapsed).
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if !strings.Contains(line, "rtsp frame rate") {
+			continue
+		}
+		var rec struct {
+			FPS    float64 `json:"fps"`
+			Frames int64   `json:"frames"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("unmarshal rate line %q: %v", line, err)
+		}
+		if rec.FPS <= 0 {
+			t.Fatalf("reported fps = %v, want > 0", rec.FPS)
+		}
+		// 10ms cadence => ~100fps. The cumulative bug reports frames/elapsed
+		// which, on the first interval, is orders of magnitude too high.
+		if rec.FPS > 400 {
+			t.Fatalf("reported fps = %.1f, want ~100 (delta over the interval); "+
+				"the cumulative count is being used", rec.FPS)
+		}
+		if rec.FPS < 20 {
+			t.Fatalf("reported fps = %.1f, want ~100 (10ms cadence)", rec.FPS)
+		}
+	}
+}
+
+// TestReportRateIntervalRespected checks that the rate is not reported on
+// every frame: the log must stay quiet between intervals.
+func TestReportRateIntervalRespected(t *testing.T) {
+	prev := rateReportInterval
+	rateReportInterval = time.Hour
+	defer func() { rateReportInterval = prev }()
+
+	var logBuf threadSafeBuf
+	log := zerolog.New(&logBuf).With().Timestamp().Logger()
+	s := New("rtsp://fake/stream", log)
+
+	for i := 0; i < 50; i++ {
+		s.publish(grayImage(4, 4, color.RGBA{R: 1, G: 2, B: 3, A: 255}))
+	}
+	if strings.Contains(logBuf.String(), "rtsp frame rate") {
+		t.Fatalf("expected no rate report within the interval, got: %s", logBuf.String())
 	}
 }
