@@ -128,3 +128,57 @@ func TestIsKeyframeAccessUnit(t *testing.T) {
 		})
 	}
 }
+
+// TestIsParameterSetAccessUnit checks the classifier for access units that
+// carry the decoder's parameter sets.
+//
+// The H.264 decoder needs an SPS and a PPS before it can decode any slice,
+// and it learns them from the NALUs it is fed. A camera may send them in
+// their own access unit rather than bundled with the IDR, so those access
+// units must still reach the decoder even though they are not worth
+// decoding on their own.
+func TestIsParameterSetAccessUnit(t *testing.T) {
+	tests := []struct {
+		name  string
+		nalus [][]byte
+		want  bool
+	}{
+		{
+			name:  "SPS present",
+			nalus: [][]byte{{0x67, 0x00}},
+			want:  true,
+		},
+		{
+			name:  "PPS present",
+			nalus: [][]byte{{0x68, 0x00}},
+			want:  true,
+		},
+		{
+			name:  "SPS and PPS",
+			nalus: [][]byte{{0x67, 0x00}, {0x68, 0x00}},
+			want:  true,
+		},
+		{
+			name:  "IDR only",
+			nalus: [][]byte{{0x65, 0x00}},
+			want:  false,
+		},
+		{
+			name:  "P-frames only",
+			nalus: [][]byte{{0x41, 0x00}},
+			want:  false,
+		},
+		{
+			name:  "empty",
+			nalus: nil,
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isParameterSetAccessUnit(tt.nalus); got != tt.want {
+				t.Fatalf("isParameterSetAccessUnit() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

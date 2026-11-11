@@ -23,8 +23,12 @@ import (
 // naluTypeMask masks the NALU type out of a NALU header byte.
 const naluTypeMask = 0x1f
 
-// naluTypeIDR is the H.264 NALU type of an IDR (key) frame.
-const naluTypeIDR = 5
+// H.264 NALU types the grabber cares about.
+const (
+	naluTypeIDR = 5 // IDR (key) frame
+	naluTypeSPS = 7 // sequence parameter set
+	naluTypePPS = 8 // picture parameter set
+)
 
 // ErrNoKeyframe reports that no keyframe arrived before the deadline.
 var ErrNoKeyframe = errors.New("no keyframe received")
@@ -117,9 +121,12 @@ func (g *Grabber) Grab(ctx context.Context) (w, h int, pix []byte, err error) {
 			if err != nil {
 				return
 			}
-			// Skip inter frames: only a keyframe decodes standalone, and
-			// decoding one is enough to get a full-resolution picture.
-			if !isKeyframeAccessUnit(nalus) {
+			// Only a keyframe is worth decoding: it is self-contained, so it
+			// yields a full picture without any preceding P-frames. Feeding
+			// the decoder every frame would cost ~21x more CPU for the same
+			// picture, and would not keep up with the packet rate.
+			keyframe := isKeyframeAccessUnit(nalus)
+			if !keyframe && !isParameterSetAccessUnit(nalus) {
 				return
 			}
 			avc := make([]byte, 0, 1024)
@@ -131,6 +138,11 @@ func (g *Grabber) Grab(ctx context.Context) (w, h int, pix []byte, err error) {
 			}
 			img, err := decoder.DecodePacket(avc)
 			if err != nil || img == nil {
+				return
+			}
+			// A parameter-set-only access unit decodes to nothing; only a
+			// keyframe carries a usable picture.
+			if !keyframe {
 				return
 			}
 			rgb := imaging.ToRGB(img)
@@ -208,6 +220,26 @@ func selectFormat(desc *description.Session) (*description.Media, format.Format,
 func isKeyframeAccessUnit(nalus [][]byte) bool {
 	for _, nalu := range nalus {
 		if len(nalu) > 0 && nalu[0]&naluTypeMask == naluTypeIDR {
+			return true
+		}
+	}
+	return false
+}
+
+// isParameterSetAccessUnit reports whether an access unit carries the
+// decoder's parameter sets (SPS/PPS).
+//
+// The decoder needs an SPS and a PPS before it can decode any slice, and it
+// learns them only from the NALUs it is fed. A camera may send them in their
+// own access unit rather than bundled with the IDR, so those access units
+// must still reach the decoder.
+func isParameterSetAccessUnit(nalus [][]byte) bool {
+	for _, nalu := range nalus {
+		if len(nalu) == 0 {
+			continue
+		}
+		switch nalu[0] & naluTypeMask {
+		case naluTypeSPS, naluTypePPS:
 			return true
 		}
 	}
