@@ -16,6 +16,8 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"h2hsecure.com/face/internal/rtsp/rtspmock"
 )
 
 const (
@@ -27,7 +29,7 @@ var (
 	rtspBaseURL   string
 	rtspCtx       context.Context
 	rtspKontainer testcontainers.Container
-	rtspMock      *mockRTSP
+	rtspMock      *rtspmock.Server
 )
 
 func streamCheck(rtspURL string) (StreamCheckResp, int, string, error) {
@@ -140,8 +142,13 @@ func TestMain(m *testing.M) {
 
 	// hosting the RTSP server in-process; face-api container must share the
 	// host network namespace to reach it via 127.0.0.1.
-	rtspMock = &mockRTSP{}
-	if err := rtspMock.start(); err != nil {
+	var err error
+	rtspMock, err = rtspmock.New(mockRTSPAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create mock rtsp server: %v\n", err)
+		os.Exit(1)
+	}
+	if err := rtspMock.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start mock rtsp server: %v\n", err)
 		os.Exit(1)
 	}
@@ -201,7 +208,7 @@ func TestMain(m *testing.M) {
 	if err := rtspKontainer.Terminate(rtspCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to terminate container: %v\n", err)
 	}
-	rtspMock.stop()
+	rtspMock.Stop()
 
 	os.Remove("test_rtsp_hopkins_1.jpg")
 	os.Exit(code)
@@ -218,11 +225,11 @@ func TestStreamCheckMatched_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read test image: %v", err)
 	}
-	frame, err := padJPEGToSide(raw, 256)
+	frame, err := rtspmock.PadJPEGToSide(raw, 256)
 	if err != nil {
 		t.Fatalf("prepare stream frame: %v", err)
 	}
-	rtspMock.setFrame(frame)
+	rtspMock.SetFrame(frame)
 
 	t.Log("=== Step 3: Checking the RTSP stream ===")
 	result, status, body, err := streamCheck(rtspURL)
@@ -256,11 +263,11 @@ func TestStreamCheckConfigFallback_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read test image: %v", err)
 	}
-	frame, err := padJPEGToSide(raw, 256)
+	frame, err := rtspmock.PadJPEGToSide(raw, 256)
 	if err != nil {
 		t.Fatalf("prepare stream frame: %v", err)
 	}
-	rtspMock.setFrame(frame)
+	rtspMock.SetFrame(frame)
 
 	result, status, body, err := streamCheck("")
 	if err != nil {
@@ -285,11 +292,11 @@ func TestStreamCheckConfigFallback_E2E(t *testing.T) {
 
 func TestStreamCheckNoFace_E2E(t *testing.T) {
 	t.Log("=== Step 1: Streaming a solid-color (no-face) frame ===")
-	solid, err := solidJPEG(640, 480)
+	solid, err := rtspmock.SolidJPEG(640, 480)
 	if err != nil {
 		t.Fatalf("build solid frame: %v", err)
 	}
-	rtspMock.setFrame(solid)
+	rtspMock.SetFrame(solid)
 
 	t.Log("=== Step 2: Checking the RTSP stream (expects timeout) ===")
 	start := time.Now()
@@ -320,11 +327,11 @@ func TestStreamCheckAudit_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read test image: %v", err)
 	}
-	frame, err := padJPEGToSide(raw, 256)
+	frame, err := rtspmock.PadJPEGToSide(raw, 256)
 	if err != nil {
 		t.Fatalf("prepare stream frame: %v", err)
 	}
-	rtspMock.setFrame(frame)
+	rtspMock.SetFrame(frame)
 
 	result, status, body, err := streamCheck(rtspURL)
 	if err != nil {
@@ -399,11 +406,11 @@ func TestStreamCheckUnreachable_E2E(t *testing.T) {
 // listing shows the "View frame" button instead of a thumbnail.
 func TestRTSPNoFaceAuditEntry_E2E(t *testing.T) {
 	t.Log("=== Step 1: Streaming a solid-color (no-face) frame ===")
-	solid, err := solidJPEG(640, 480)
+	solid, err := rtspmock.SolidJPEG(640, 480)
 	if err != nil {
 		t.Fatalf("build solid frame: %v", err)
 	}
-	rtspMock.setFrame(solid)
+	rtspMock.SetFrame(solid)
 
 	t.Log("=== Step 2: Checking the RTSP stream ===")
 	result, status, _, err := streamCheck(rtspURL)
