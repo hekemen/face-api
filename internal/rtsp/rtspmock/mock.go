@@ -6,10 +6,13 @@ package rtspmock
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/jpeg"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -30,23 +33,37 @@ type Server struct {
 	media  *description.Media
 	enc    *rtpmjpeg.Encoder
 
-	mu      sync.Mutex
-	frame   []byte
-	ts      uint32
-	stopCh  chan struct{}
-	wg      sync.WaitGroup
+	mu       sync.Mutex
+	frame    []byte
+	ts       uint32
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 	rtspAddr string
+	rtpAddr  string
+	rtcpAddr string
 }
 
 var _ gortsplib.ServerHandlerOnDescribe = (*Server)(nil)
 var _ gortsplib.ServerHandlerOnSetup = (*Server)(nil)
 var _ gortsplib.ServerHandlerOnPlay = (*Server)(nil)
 
-// New creates a Server listening for RTSP on addr. The RTP/RTCP UDP ports
-// are fixed (127.0.0.1:18000 / 127.0.0.1:18001), so only one Server can run
-// at a time.
+// New creates a Server listening for RTSP on addr. The RTP/RTCP UDP ports are
+// derived from addr's port (port+1000 / port+1001) so that multiple servers can
+// run side by side in different tests.
 func New(addr string) (*Server, error) {
-	return &Server{rtspAddr: addr}, nil
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid RTSP address %q: %w", addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid RTSP port %q: %w", portStr, err)
+	}
+	return &Server{
+		rtspAddr: addr,
+		rtpAddr:  net.JoinHostPort(host, strconv.Itoa(port+1000)),
+		rtcpAddr: net.JoinHostPort(host, strconv.Itoa(port+1001)),
+	}, nil
 }
 
 // Start binds the RTSP/UDP listeners and begins streaming.
@@ -54,8 +71,8 @@ func (s *Server) Start() error {
 	s.srv = &gortsplib.Server{
 		Handler:        s,
 		RTSPAddress:    s.rtspAddr,
-		UDPRTPAddress:  "127.0.0.1:18000",
-		UDPRTCPAddress: "127.0.0.1:18001",
+		UDPRTPAddress:  s.rtpAddr,
+		UDPRTCPAddress: s.rtcpAddr,
 	}
 	if err := s.srv.Start(); err != nil {
 		return err
