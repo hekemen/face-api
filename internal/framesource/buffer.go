@@ -67,6 +67,14 @@ func (b *Buffer) Dims() (w, h int) {
 	return b.w, b.h
 }
 
+// LastAt returns the publish time of the newest frame, or the zero time when
+// no frame has been published yet.
+func (b *Buffer) LastAt() time.Time {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.at
+}
+
 // Latest copies the latest frame into dst and reports its dimensions, sequence
 // number and capture time. It returns ok=false when no frame has been published
 // yet (seq == 0), or when len(dst) < w*h*3 (the caller must supply a big enough

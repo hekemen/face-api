@@ -11,6 +11,7 @@ import (
 	"image"
 	"image/jpeg"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/rtp"
@@ -48,6 +49,10 @@ type Source struct {
 
 	// stream is injected for tests; production uses streamRTSP.
 	stream streamFunc
+
+	// frames counts published frames; used to report the achieved frame rate.
+	frames      atomic.Int64
+	lastRateLog atomic.Int64
 }
 
 // streamFunc connects to url, decodes frames and hands each fully decoded
@@ -126,6 +131,31 @@ func (s *Source) publish(img image.Image) {
 			s.log.Error().Msg("framesource: convert into failed")
 		}
 	})
+	s.reportRate()
+}
+
+// reportRate logs the achieved frame rate every 5 seconds. It is the only way
+// to tell a slow decoder from a silent camera on a small host.
+func (s *Source) reportRate() {
+	n := s.frames.Add(1)
+	now := time.Now()
+	last := s.lastRateLog.Load()
+	if last == 0 {
+		s.lastRateLog.Store(now.UnixNano())
+		return
+	}
+	if now.UnixNano()-last < int64(5*time.Second) {
+		return
+	}
+	if !s.lastRateLog.CompareAndSwap(last, now.UnixNano()) {
+		return
+	}
+	elapsed := now.Sub(time.Unix(0, last)).Seconds()
+	s.log.Info().
+		Float64("fps", float64(n)/elapsed).
+		Int64("frames", n).
+		Dur("lag", now.Sub(s.buf.LastAt())).
+		Msg("rtsp frame rate")
 }
 
 // streamRTSP is the production implementation of streamFunc: one long-lived
