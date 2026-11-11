@@ -28,13 +28,13 @@ type detLevel struct {
 	stride    int
 	scoreName string
 	regName   string
-	kpsName   string // keypoints output (449/474/499), wired in Task 8
+	kpsName   string // keypoints output (449/474/499), wired above
 }
 
 var detLevels = []detLevel{
-	{stride: 8, scoreName: "443", regName: "446"},
-	{stride: 16, scoreName: "468", regName: "471"},
-	{stride: 32, scoreName: "493", regName: "496"},
+	{stride: 8, scoreName: "443", regName: "446", kpsName: "449"},
+	{stride: 16, scoreName: "468", regName: "471", kpsName: "474"},
+	{stride: 32, scoreName: "493", regName: "496", kpsName: "499"},
 }
 
 // FaceProcessorImpl implements domain.FaceProcessor using ONNX Runtime.
@@ -220,7 +220,7 @@ func (p *FaceProcessorImpl) detectAndCrop112(img *imaging.RGBImage) (*faceHit, e
 		levels[i] = detLevelOutputs{
 			Scores: outs[lvl.scoreName],
 			Boxes:  outs[lvl.regName],
-			KPs:    outs[lvl.kpsName], // nil until Task 8 wires the kps outputs
+			KPs:    outs[lvl.kpsName], // 449/474/499
 		}
 	}
 

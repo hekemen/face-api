@@ -68,6 +68,34 @@ func TestAlignCropFallsBackOnBadKPs(t *testing.T) {
 	}
 }
 
+// TestAlignCropArcFace5WithoutKPsFallsBackToBBox pins that arcface5 with no
+// usable landmarks degrades to the bbox crop instead of producing a zeroed or
+// NaN crop.
+func TestAlignCropArcFace5WithoutKPsFallsBackToBBox(t *testing.T) {
+	img := imaging.NewRGB(200, 160)
+	for y := 0; y < 160; y++ {
+		for x := 0; x < 200; x++ {
+			img.Pix[(y*200+x)*3+0] = byte(x)
+			img.Pix[(y*200+x)*3+1] = byte(y)
+			img.Pix[(y*200+x)*3+2] = byte((x + y) / 2)
+		}
+	}
+	hit := &faceHit{
+		HasKPs: false,
+		Box:    [4]float32{40, 30, 120, 110},
+	}
+	p := &FaceProcessorImpl{align: AlignmentArcFace5}
+	dst := imaging.NewRGB(112, 112)
+	if usedWarp := p.alignCrop(dst, img, hit); usedWarp {
+		t.Error("usedWarp = true, want false (no usable KPs -> bbox fallback)")
+	}
+	wantR, wantG, wantB := img.At(40, 30)
+	gotR, gotG, gotB := dst.At(0, 0)
+	if gotR != wantR || gotG != wantG || gotB != wantB {
+		t.Errorf("dst(0,0) = (%d,%d,%d), want bbox corner (%d,%d,%d)", gotR, gotG, gotB, wantR, wantG, wantB)
+	}
+}
+
 func TestAlignCropUsesWarp(t *testing.T) {
 	img := imaging.NewRGB(200, 160)
 	for y := 0; y < 160; y++ {
