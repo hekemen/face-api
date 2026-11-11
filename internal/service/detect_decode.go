@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 
 	"h2hsecure.com/face/internal/domain"
 )
@@ -93,10 +94,10 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 
 			best.Score = conf
 			best.Box = [4]float32{
-				clampToFrame(x1, scale, frameW),
-				clampToFrame(y1, scale, frameH),
-				clampToFrame(x2, scale, frameW),
-				clampToFrame(y2, scale, frameH),
+				float32(int(math.Round(float64(clampToFrame(x1, scale, frameW))))),
+				float32(int(math.Round(float64(clampToFrame(y1, scale, frameH))))),
+				float32(int(math.Round(float64(clampToFrame(x2, scale, frameW))))),
+				float32(int(math.Round(float64(clampToFrame(y2, scale, frameH))))),
 			}
 
 			best.HasKPs = false

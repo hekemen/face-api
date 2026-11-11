@@ -81,6 +81,7 @@ func NewFaceProcessor(rt *ort.Runtime, env *ort.Env, detS, recS *ort.Session) (*
 	}
 	p.recTens, err = ort.NewTensorValue[float32](rt, p.recBlob, []int64{1, 3, recInputSize, recInputSize})
 	if err != nil {
+		p.detTens.Close()
 		return nil, fmt.Errorf("create recognition input tensor: %w", err)
 	}
 	return p, nil
@@ -117,6 +118,10 @@ func (p *FaceProcessorImpl) DetectAndCropFromRTSP(rtspURL string) (*domain.FaceC
 // RGB frame (len(pix) >= w*h*3), reusing the preallocated canvas, blobs and
 // input tensors. pipelineMu is held for the whole pipeline.
 func (p *FaceProcessorImpl) DetectAndCropFrame(w, h int, pix []byte) (*domain.FaceCrop, error) {
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("invalid frame dimensions %dx%d", w, h)
+	}
+
 	p.pipelineMu.Lock()
 	defer p.pipelineMu.Unlock()
 
@@ -128,25 +133,25 @@ func (p *FaceProcessorImpl) DetectAndCropFrame(w, h int, pix []byte) (*domain.Fa
 	}
 
 	// Crop the winning box into the preallocated 112×112 recognition target.
-	cropped := imaging.NewRGB(recInputSize, recInputSize)
-	box := image.Rect(
+	// p.crop is reused across frames; CropInto overwrites every pixel of the
+	// target, so no stale data survives between calls.
+	if err := imaging.CropInto(p.crop, img, image.Rect(
 		int(math.Round(float64(hit.Box[0]))),
 		int(math.Round(float64(hit.Box[1]))),
 		int(math.Round(float64(hit.Box[2]))),
 		int(math.Round(float64(hit.Box[3]))),
-	)
-	if err := imaging.CropInto(cropped, img, box); err != nil {
+	)); err != nil {
 		return nil, fmt.Errorf("crop face region: %w", err)
 	}
 
 	// Encode crop to JPEG.
-	encoded, err := imaging.EncodeJPEG(cropped)
+	encoded, err := imaging.EncodeJPEG(p.crop)
 	if err != nil {
 		return nil, fmt.Errorf("encode crop: %w", err)
 	}
 
 	// Extract embedding from the preallocated recognition blob.
-	if err := imaging.NCHWInto(p.recBlob, cropped, 127.5); err != nil {
+	if err := imaging.NCHWInto(p.recBlob, p.crop, 127.5); err != nil {
 		return nil, fmt.Errorf("build embedding blob: %w", err)
 	}
 	embedding, err := p.runRecognize()
@@ -154,10 +159,16 @@ func (p *FaceProcessorImpl) DetectAndCropFrame(w, h int, pix []byte) (*domain.Fa
 		return nil, fmt.Errorf("extract embedding: %w", err)
 	}
 
+	normalizedBbox := [4]float32{
+		hit.Box[0] / float32(w),
+		hit.Box[1] / float32(h),
+		hit.Box[2] / float32(w),
+		hit.Box[3] / float32(h),
+	}
 	return &domain.FaceCrop{
 		Data:      encoded,
 		Embedding: embedding,
-		BBox:      hit.Box,
+		BBox:      normalizedBbox,
 	}, nil
 }
 
@@ -266,6 +277,10 @@ func (p *FaceProcessorImpl) ExtractEmbedding(crop *domain.FaceCrop) (domain.Face
 	}
 	p.pipelineMu.Lock()
 	defer p.pipelineMu.Unlock()
+	if img.W != recInputSize || img.H != recInputSize {
+		return nil, fmt.Errorf("build embedding blob: expected %dx%dx3 image, got %dx%d",
+			recInputSize, recInputSize, img.W, img.H)
+	}
 	if err := imaging.NCHWInto(p.recBlob, img, 127.5); err != nil {
 		return nil, fmt.Errorf("build embedding blob: %w", err)
 	}

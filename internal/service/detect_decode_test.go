@@ -195,6 +195,52 @@ func TestDecodeBestFaceRejectsBadLengths(t *testing.T) {
 	}
 }
 
+// TestDecodeBestFaceRoundHalfAwayFromZero pins the crop-rect rounding: a
+// canvas coordinate of exactly 7.5 must round to 8, not truncate to 7. This
+// is the round-before-clamp behaviour the preallocated processor relies on
+// for byte-identical bbox alignment (Task 7 carry-forward from Task 6).
+func TestDecodeBestFaceRoundHalfAwayFromZero(t *testing.T) {
+	outs := validDetOutputs()
+
+	// Stride 8, anchor 2: cell 1 -> col 1, row 0, so cx=8, cy=0.
+	// x1 = 8 - 8*0.0625 = 7.5 exactly; scale 1.0 keeps it in frame coords.
+	outs[0].Scores[2] = 0.9
+	copy(outs[0].Boxes[2*4:], []float32{0.0625, 0, 1, 1})
+
+	hit, err := decodeBestFace(outs, 1.0, 640, 640)
+	if err != nil {
+		t.Fatalf("decodeBestFace: %v", err)
+	}
+	wantBox := [4]float32{8, 0, 16, 8}
+	if hit.Box != wantBox {
+		t.Errorf("Box = %v, want %v (7.5 must round to 8, not truncate to 7)", hit.Box, wantBox)
+	}
+}
+
+// TestDecodeBestFaceToleratesAbsentKPs pins that keypoints are optional:
+// when a level emits no KPs (nil), decodeBestFace still returns the box and
+// reports HasKPs=false instead of erroring. The arcface5 path wires real KPs
+// in Task 8; until then the processor must degrade to the bbox crop.
+func TestDecodeBestFaceToleratesAbsentKPs(t *testing.T) {
+	outs := validDetOutputs()
+
+	outs[0].Scores[162] = 0.95
+	copy(outs[0].Boxes[162*4:], []float32{1, 1, 2, 2})
+	outs[0].KPs = nil // absent keypoints
+
+	hit, err := decodeBestFace(outs, 1.0, 640, 640)
+	if err != nil {
+		t.Fatalf("decodeBestFace: %v", err)
+	}
+	if hit.HasKPs {
+		t.Error("HasKPs = true, want false with absent KPs")
+	}
+	wantBox := [4]float32{0, 0, 24, 24}
+	if hit.Box != wantBox {
+		t.Errorf("Box = %v, want %v", hit.Box, wantBox)
+	}
+}
+
 func TestDecodeBestFaceTieKeepsFirst(t *testing.T) {
 	outs := validDetOutputs()
 
