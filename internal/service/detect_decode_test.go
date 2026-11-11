@@ -217,10 +217,6 @@ func TestDecodeBestFaceRoundHalfAwayFromZero(t *testing.T) {
 	}
 }
 
-// TestDecodeBestFaceToleratesAbsentKPs pins that keypoints are optional:
-// when a level emits no KPs (nil), decodeBestFace still returns the box and
-// reports HasKPs=false instead of erroring. The arcface5 path wires real KPs
-// in Task 8; until then the processor must degrade to the bbox crop.
 // TestDecodeBestFaceMatchesProductionRounding pins that the box is computed
 // from the exact float64 canvas→frame quotient (round half away from zero,
 // then clamp to the frame as integers), exactly as the original production
