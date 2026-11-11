@@ -479,6 +479,7 @@ outer:
 		}
 		w, h = gw, gh
 		lastFrame = pix
+		s.logf("burst sample", "width", w, "height", h)
 
 		crop, err := s.processor.DetectAndCropFrame(w, h, pix)
 		switch {
