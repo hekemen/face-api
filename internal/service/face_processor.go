@@ -1,21 +1,15 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"image"
-	"image/color"
-	"image/jpeg"
-	_ "image/png"
 	"math"
 	"sync"
 
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	"h2hsecure.com/face/internal/domain"
-
-	_ "golang.org/x/image/webp"
+	"h2hsecure.com/face/internal/imaging"
 )
 
 const (
@@ -43,26 +37,26 @@ var detLevels = []detLevel{
 
 // FaceProcessorImpl implements domain.FaceProcessor using ONNX Runtime.
 type FaceProcessorImpl struct {
-	rt    *ort.Runtime
-	env   *ort.Env
-	detS  *ort.Session
-	recS  *ort.Session
+	rt      *ort.Runtime
+	env     *ort.Env
+	detS    *ort.Session
+	recS    *ort.Session
 	inferMu sync.Mutex
 }
 
 // NewFaceProcessor creates a new ONNX-based face processor.
 func NewFaceProcessor(rt *ort.Runtime, env *ort.Env, detS, recS *ort.Session) *FaceProcessorImpl {
 	return &FaceProcessorImpl{
-		rt:    rt,
-		env:   env,
-		detS:  detS,
-		recS:  recS,
+		rt:   rt,
+		env:  env,
+		detS: detS,
+		recS: recS,
 	}
 }
 
 // DetectAndCrop runs face detection on an image and returns a 112x112 face crop.
 func (p *FaceProcessorImpl) DetectAndCrop(data []byte) (*domain.FaceCrop, error) {
-	img, err := decodeRGB(data)
+	img, err := imaging.DecodeRGB(data)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +67,7 @@ func (p *FaceProcessorImpl) DetectAndCrop(data []byte) (*domain.FaceCrop, error)
 	}
 
 	// Encode crop to JPEG
-	encoded, err := encodeFaceJPEG(cropImg)
+	encoded, err := imaging.EncodeJPEG(cropImg)
 	if err != nil {
 		return nil, fmt.Errorf("encode crop: %w", err)
 	}
@@ -102,16 +96,17 @@ func (p *FaceProcessorImpl) DetectAndCropFromRTSP(rtspURL string) (*domain.FaceC
 
 // --- Internal methods ---
 
-func (p *FaceProcessorImpl) detectAndCrop112(img *rgbImage) (*rgbImage, [4]float32, error) {
-	h, w := img.h, img.w
+func (p *FaceProcessorImpl) detectAndCrop112(img *imaging.RGBImage) (*imaging.RGBImage, [4]float32, error) {
+	h, w := img.H, img.W
 
-	canvas, scale, err := resizePadToSquare(img, detInputSize)
-	if err != nil {
-		return nil, [4]float32{}, fmt.Errorf("prepare detection input: %w", err)
+	canvas := imaging.NewRGB(detInputSize, detInputSize)
+	scale := imaging.PadSquareInto(canvas, img)
+	if scale == 0 {
+		return nil, [4]float32{}, fmt.Errorf("prepare detection input: invalid scaled dimensions for %dx%d image", w, h)
 	}
 
-	blob, err := rgbToNCHW(canvas, detInputSize, 128.0)
-	if err != nil {
+	blob := make([]float32, 3*detInputSize*detInputSize)
+	if err := imaging.NCHWInto(blob, canvas, 128.0); err != nil {
 		return nil, [4]float32{}, fmt.Errorf("build detection blob: %w", err)
 	}
 
@@ -193,12 +188,10 @@ func (p *FaceProcessorImpl) detectAndCrop112(img *rgbImage) (*rgbImage, [4]float
 		return nil, [4]float32{}, fmt.Errorf("invalid bounding box: x1=%d y1=%d x2=%d y2=%d", bestX1, bestY1, bestX2, bestY2)
 	}
 
-	cropped, err := cropRegion(img, image.Rect(bestX1, bestY1, bestX2, bestY2))
-	if err != nil {
+	cropped := imaging.NewRGB(recInputSize, recInputSize)
+	if err := imaging.CropInto(cropped, img, image.Rect(bestX1, bestY1, bestX2, bestY2)); err != nil {
 		return nil, [4]float32{}, fmt.Errorf("crop face region: %w", err)
 	}
-
-	cropped = bilinearResize(cropped, recInputSize, recInputSize)
 
 	normalizedBbox := [4]float32{
 		float32(bestX1) / float32(w),
@@ -210,9 +203,14 @@ func (p *FaceProcessorImpl) detectAndCrop112(img *rgbImage) (*rgbImage, [4]float
 	return cropped, normalizedBbox, nil
 }
 
-func (p *FaceProcessorImpl) extractEmbedding(img *rgbImage) (domain.FaceEmbedding, error) {
-	blob, err := rgbToNCHW(img, recInputSize, 127.5)
-	if err != nil {
+func (p *FaceProcessorImpl) extractEmbedding(img *imaging.RGBImage) (domain.FaceEmbedding, error) {
+	if img.W != recInputSize || img.H != recInputSize {
+		return nil, fmt.Errorf("build embedding blob: expected %dx%dx3 image, got %dx%d",
+			recInputSize, recInputSize, img.W, img.H)
+	}
+
+	blob := make([]float32, 3*recInputSize*recInputSize)
+	if err := imaging.NCHWInto(blob, img, 127.5); err != nil {
 		return nil, fmt.Errorf("build embedding blob: %w", err)
 	}
 	return p.runRecognize(blob)
@@ -290,178 +288,14 @@ func (p *FaceProcessorImpl) ExtractEmbedding(crop *domain.FaceCrop) (domain.Face
 	if crop == nil {
 		return nil, fmt.Errorf("crop is nil")
 	}
-	img, err := decodeRGB(crop.Data)
+	img, err := imaging.DecodeRGB(crop.Data)
 	if err != nil {
 		return nil, fmt.Errorf("decode crop: %w", err)
 	}
 	return p.extractEmbedding(img)
 }
 
-// --- Image helpers (extracted from internal/server/img.go) ---
-
-// rgbImage is a packed 8-bit RGB (3 bytes per pixel, row-major) image.
-type rgbImage struct {
-	w, h int
-	pix  []uint8
-}
-
-func decodeRGB(data []byte) (*rgbImage, error) {
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("unable to decode image format: %w", err)
-	}
-	return imageToRGB(img), nil
-}
-
-func imageToRGB(src image.Image) *rgbImage {
-	b := src.Bounds()
-	out := &rgbImage{w: b.Dx(), h: b.Dy(), pix: make([]uint8, b.Dx()*b.Dy()*3)}
-	i := 0
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r, g, bl, _ := src.At(x, y).RGBA()
-			out.pix[i] = uint8(r >> 8)
-			out.pix[i+1] = uint8(g >> 8)
-			out.pix[i+2] = uint8(bl >> 8)
-			i += 3
-		}
-	}
-	return out
-}
-
-func resizePadToSquare(img *rgbImage, size int) (*rgbImage, float64, error) {
-	longest := img.h
-	if img.w > longest {
-		longest = img.w
-	}
-	scale := float64(size) / float64(longest)
-
-	nw := int(round(float64(img.w) * scale))
-	nh := int(round(float64(img.h) * scale))
-	if nw <= 0 || nh <= 0 {
-		return nil, 0, fmt.Errorf("invalid scaled dimensions %dx%d", nw, nh)
-	}
-
-	resized := bilinearResize(img, nw, nh)
-
-	if nw == size && nh == size {
-		return resized, scale, nil
-	}
-
-	canvas := &rgbImage{w: size, h: size, pix: make([]uint8, size*size*3)}
-	for y := 0; y < nh; y++ {
-		off := y * size * 3
-		copy(canvas.pix[off:off+nw*3], resized.pix[y*nw*3:(y+1)*nw*3])
-	}
-	return canvas, scale, nil
-}
-
-func bilinearResize(src *rgbImage, w, h int) *rgbImage {
-	if w <= 0 || h <= 0 {
-		return &rgbImage{w: w, h: h}
-	}
-	scaleX := float64(src.w) / float64(w)
-	scaleY := float64(src.h) / float64(h)
-
-	out := &rgbImage{w: w, h: h, pix: make([]uint8, w*h*3)}
-	for y := 0; y < h; y++ {
-		srcY := float64(y) * scaleY
-		y0 := int(srcY)
-		if y0 > src.h-1 {
-			y0 = src.h - 1
-		}
-		y1 := y0 + 1
-		if y1 > src.h-1 {
-			y1 = src.h - 1
-		}
-		fy := srcY - float64(y0)
-
-		for x := 0; x < w; x++ {
-			srcX := float64(x) * scaleX
-			x0 := int(srcX)
-			if x0 > src.w-1 {
-				x0 = src.w - 1
-			}
-			x1 := x0 + 1
-			if x1 > src.w-1 {
-				x1 = src.w - 1
-			}
-			fx := srcX - float64(x0)
-
-			for c := 0; c < 3; c++ {
-				v00 := float64(src.pix[(y0*src.w+x0)*3+c])
-				v01 := float64(src.pix[(y0*src.w+x1)*3+c])
-				v10 := float64(src.pix[(y1*src.w+x0)*3+c])
-				v11 := float64(src.pix[(y1*src.w+x1)*3+c])
-
-				top := v00 + (v01-v00)*fx
-				bot := v10 + (v11-v10)*fx
-				out.pix[(y*w+x)*3+c] = uint8(top + (bot-top)*fy)
-			}
-		}
-	}
-	return out
-}
-
-func cropRegion(img *rgbImage, r image.Rectangle) (*rgbImage, error) {
-	r = r.Intersect(image.Rect(0, 0, img.w, img.h))
-	if r.Dx() <= 0 || r.Dy() <= 0 {
-		return nil, fmt.Errorf("invalid crop region %v", r)
-	}
-	out := &rgbImage{w: r.Dx(), h: r.Dy(), pix: make([]uint8, r.Dx()*r.Dy()*3)}
-	i := 0
-	for y := r.Min.Y; y < r.Max.Y; y++ {
-		start := (y*img.w + r.Min.X) * 3
-		copy(out.pix[i:i+r.Dx()*3], img.pix[start:start+r.Dx()*3])
-		i += r.Dx() * 3
-	}
-	return out, nil
-}
-
-func rgbToNCHW(img *rgbImage, size int, div float32) ([]float32, error) {
-	if img.w != size || img.h != size {
-		return nil, fmt.Errorf("expected %dx%dx3 image, got %dx%d", size, size, img.w, img.h)
-	}
-
-	data := make([]float32, 3*size*size)
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			base := (y*size + x) * 3
-			r := float32(img.pix[base+0])
-			g := float32(img.pix[base+1])
-			b := float32(img.pix[base+2])
-			idx := y*size + x
-			data[0*size*size+idx] = (r - 127.5) / div
-			data[1*size*size+idx] = (g - 127.5) / div
-			data[2*size*size+idx] = (b - 127.5) / div
-		}
-	}
-	return data, nil
-}
-
-func encodeFaceJPEG(img *rgbImage) ([]byte, error) {
-	dst := image.NewRGBA(image.Rect(0, 0, img.w, img.h))
-	for y := 0; y < img.h; y++ {
-		for x := 0; x < img.w; x++ {
-			i := (y*img.w + x) * 3
-			dst.Set(x, y, color.NRGBA{R: img.pix[i], G: img.pix[i+1], B: img.pix[i+2], A: 255})
-		}
-	}
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, dst, nil); err != nil {
-		return nil, fmt.Errorf("encode face image: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-func encodeFaceToBase64(img *rgbImage) (string, error) {
-	data, err := encodeFaceJPEG(img)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(data), nil
-}
-
+// round rounds to the nearest integer, halves away from zero.
 func round(v float64) int {
 	if v < 0 {
 		return int(v - 0.5)

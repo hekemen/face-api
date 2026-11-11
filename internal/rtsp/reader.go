@@ -1,13 +1,9 @@
 package rtsp
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"image"
-	"image/color"
-	"image/jpeg"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +16,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmjpeg"
 	govidh264 "github.com/liqmix/govid/h264"
 	"github.com/pion/rtp"
+	"h2hsecure.com/face/internal/imaging"
 )
 
 // Reader connects to an RTSP server, reads one decoded frame (MJPEG or H.264)
@@ -233,7 +230,7 @@ func (r *Reader) readH264(c *gortsplib.Client, u *base.URL, desc *description.Se
 		}
 		close(received)
 
-		jpegData, err := encodeToJPEG(frame)
+		jpegData, err := imaging.EncodeJPEG(imaging.ToRGB(frame))
 		if err != nil {
 			frameCh <- frameResult{err: fmt.Errorf("encode H.264 frame: %w", err)}
 			return
@@ -254,26 +251,4 @@ func (r *Reader) readH264(c *gortsplib.Client, u *base.URL, desc *description.Se
 		}
 		return res.jpeg, nil
 	}
-}
-
-// encodeToJPEG converts an image.Image to JPEG bytes.
-func encodeToJPEG(img image.Image) ([]byte, error) {
-	b := img.Bounds()
-	dst := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r, g, bl, _ := img.At(x, y).RGBA()
-			dst.Set(x, y, color.NRGBA{
-				R: uint8(r >> 8),
-				G: uint8(g >> 8),
-				B: uint8(bl >> 8),
-				A: 255,
-			})
-		}
-	}
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, dst, nil); err != nil {
-		return nil, fmt.Errorf("encode frame to JPEG: %w", err)
-	}
-	return buf.Bytes(), nil
 }

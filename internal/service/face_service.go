@@ -10,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"h2hsecure.com/face/internal/domain"
+	"h2hsecure.com/face/internal/imaging"
 )
 
 // FaceServiceImpl implements domain.FaceService using repositories and a face processor.
@@ -583,19 +584,21 @@ const noFaceFrameMaxDim = 640
 // "" if the frame cannot be decoded or encoded (graceful degradation — the
 // audit entry is still written, just without a frame).
 func noFaceFrameImage(imageData []byte) string {
-	img, err := decodeRGB(imageData)
+	img, err := imaging.DecodeRGB(imageData)
 	if err != nil {
 		return ""
 	}
-	longest := img.w
-	if img.h > longest {
-		longest = img.h
+	longest := img.W
+	if img.H > longest {
+		longest = img.H
 	}
 	if longest > noFaceFrameMaxDim {
 		scale := float64(noFaceFrameMaxDim) / float64(longest)
-		img = bilinearResize(img, round(float64(img.w)*scale), round(float64(img.h)*scale))
+		dst := imaging.NewRGB(round(float64(img.W)*scale), round(float64(img.H)*scale))
+		imaging.ResizeInto(dst, img)
+		img = dst
 	}
-	data, err := encodeFaceJPEG(img)
+	data, err := imaging.EncodeJPEG(img)
 	if err != nil {
 		return ""
 	}
