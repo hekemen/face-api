@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
@@ -106,6 +107,23 @@ type FaceProcessor interface {
 // RTSPReader reads one frame from an RTSP stream as JPEG bytes.
 type RTSPReader interface {
 	ReadFrame(url string, timeout time.Duration) ([]byte, error)
+}
+
+// FrameSource exposes the newest decoded camera frame (implemented by
+// internal/framesource).
+type FrameSource interface {
+	// Dims returns the current frame size, or 0,0 before the first frame.
+	Dims() (w, h int)
+	// Latest copies the newest frame into dst (len(dst) >= w*h*3) and reports
+	// its dimensions, sequence number and capture time. Returns ok=false when
+	// no frame has been published yet.
+	Latest(dst []byte) (w, h int, seq uint64, at time.Time, ok bool)
+}
+
+// StreamScanner scans buffered camera frames and returns the first match at
+// or above the threshold, or the best not-matched result at the deadline.
+type StreamScanner interface {
+	ScanBurst(ctx context.Context) (*StreamCheckResult, error)
 }
 
 // FaceCrop holds the result of face detection/cropping.

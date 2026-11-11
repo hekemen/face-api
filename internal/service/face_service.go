@@ -2,7 +2,9 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,14 +17,19 @@ import (
 
 // FaceServiceImpl implements domain.FaceService using repositories and a face processor.
 type FaceServiceImpl struct {
-	users      domain.UserRepository
-	audit      domain.AuditRepository
-	processor  domain.FaceProcessor
-	rtspReader domain.RTSPReader
-	settings   domain.SettingsRepository
-	threshold  float32
-	logger     *zerolog.Logger
-	mu         sync.Mutex
+	users       domain.UserRepository
+	audit       domain.AuditRepository
+	processor   domain.FaceProcessor
+	rtspReader  domain.RTSPReader
+	frameSource domain.FrameSource
+	settings    domain.SettingsRepository
+	threshold   float32
+	streamURL   string
+	logger      *zerolog.Logger
+	mu          sync.Mutex
+	// burst configuration
+	burstWindow         time.Duration
+	burstSampleInterval time.Duration
 }
 
 // New creates a new FaceService.
@@ -97,6 +104,26 @@ func toFields(kv []interface{}) map[string]interface{} {
 // WithRTSPReader sets the RTSP reader for stream-based operations.
 func (s *FaceServiceImpl) WithRTSPReader(r domain.RTSPReader) *FaceServiceImpl {
 	s.rtspReader = r
+	return s
+}
+
+// WithFrameSource sets the buffered frame source used by ScanBurst.
+func (s *FaceServiceImpl) WithFrameSource(src domain.FrameSource) *FaceServiceImpl {
+	s.frameSource = src
+	return s
+}
+
+// WithBurst sets the burst window and minimum sample interval used by ScanBurst.
+func (s *FaceServiceImpl) WithBurst(window, sample time.Duration) *FaceServiceImpl {
+	s.burstWindow = window
+	s.burstSampleInterval = sample
+	return s
+}
+
+// WithStreamURL sets the RTSP URL used for the cold-buffer one-shot fallback
+// when the buffer has no fresh frame.
+func (s *FaceServiceImpl) WithStreamURL(url string) *FaceServiceImpl {
+	s.streamURL = url
 	return s
 }
 
@@ -366,7 +393,228 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 	}, nil
 }
 
-// PromoteFromAudit promotes an audit entry to an enrolled user.
+// --- Stream Check burst scanner ---
+
+// ScanBurst scans the buffered sub-stream frames for up to the burst window,
+// sampling no faster than burstSampleInterval, and returns the first match at
+// or above the threshold. It writes exactly one audit row per burst and keeps
+// the pipeline mutex free between samples so HTTP requests are never blocked
+// for the whole window.
+func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckResult, error) {
+	if s.frameSource == nil {
+		return nil, fmt.Errorf("frame source not configured")
+	}
+
+	// Derive a bounded deadline from the burst window so that MQTT Stop() can
+	// abort an in-flight burst.
+	ctx, cancel := context.WithTimeout(ctx, s.burstWindow)
+	defer cancel()
+
+	// Snapshot the threshold once; never hold s.mu across inference.
+	s.mu.Lock()
+	threshold := s.threshold
+	s.mu.Unlock()
+
+	// Read the enrolled users once and reuse for every sample.
+	users, err := s.users.ListAll()
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+
+	start := time.Now()
+	var (
+		w, h        int
+		scratch     []byte
+		lastSeq     uint64
+		lastSample  time.Time
+		bestScore   float32 = -1
+		bestName    string
+		bestCrop    *domain.FaceCrop
+		faceSeen    bool
+		firstSample = true
+	)
+	w, h = s.frameSource.Dims()
+	if w > 0 && h > 0 {
+		scratch = make([]byte, w*h*3)
+	}
+
+	// If the buffer has not produced a frame within 3 sample intervals, fall
+	// back to a one-shot check so a cold/down sub-stream does not disable MQTT
+	// scanning.
+	warmup := time.Now().Add(3 * s.burstSampleInterval)
+
+outer:
+	for {
+		// Enforce the minimum gap between inferences (not before the first
+		// sample, so the burst reacts immediately).
+		if !firstSample {
+			if elapsed := time.Since(lastSample); elapsed < s.burstSampleInterval {
+				select {
+				case <-ctx.Done():
+					break outer
+				case <-time.After(s.burstSampleInterval - elapsed):
+				}
+			}
+		}
+		firstSample = false
+		lastSample = time.Now()
+
+		// Ensure scratch is big enough for the current frame size.
+		cw, ch := s.frameSource.Dims()
+		if cw > 0 && ch > 0 && len(scratch) < cw*ch*3 {
+			scratch = make([]byte, cw*ch*3)
+			w, h = cw, ch
+		}
+
+		// Wait for a frame newer than the last one processed.
+		for {
+			select {
+			case <-ctx.Done():
+				break outer
+			case <-time.After(20 * time.Millisecond):
+			}
+			w2, h2, seq, _, ok := s.frameSource.Latest(scratch)
+			if !ok {
+				if time.Now().After(warmup) {
+					result, err := s.CheckStream(s.streamURL)
+					if err != nil {
+						return nil, err
+					}
+					return result, nil
+				}
+				continue
+			}
+			if seq == lastSeq {
+				continue
+			}
+			w, h = w2, h2
+			lastSeq = seq
+			break
+		}
+
+		crop, err := s.processor.DetectAndCropFrame(w, h, scratch[:w*h*3])
+		if err != nil {
+			if errors.Is(err, domain.ErrNoFace) {
+				continue // no face this sample; keep scanning
+			}
+			continue // processing hiccup; do not end the burst
+		}
+
+		faceSeen = true
+
+		// Best match across all enrolled users.
+		var sampleName string
+		var sampleScore float32 = -1
+		for _, u := range users {
+			if sc := domain.BestEmbeddingScore(crop.Embedding, u.Embeddings); sc > sampleScore {
+				sampleScore = sc
+				sampleName = u.Name
+			}
+		}
+		if sampleScore > bestScore {
+			bestScore = sampleScore
+			bestName = sampleName
+			bestCrop = &domain.FaceCrop{
+				Data:      append([]byte{}, crop.Data...),
+				Embedding: append(domain.FaceEmbedding{}, crop.Embedding...),
+				BBox:      crop.BBox,
+			}
+		}
+
+		if sampleScore >= threshold && sampleName != "" {
+			dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+			faceB64 := base64.StdEncoding.EncodeToString(crop.Data)
+			_ = s.audit.Append([]domain.AuditEntry{{
+				Time:       time.Now(),
+				Endpoint:   "stream-check",
+				Name:       sampleName,
+				Similarity: sampleScore,
+				Matched:    true,
+				Status:     domain.AuditStatusMatched,
+				DurationMs: dur.DurationMs,
+				FaceImage:  faceB64,
+				FaceThumb:  thumbnailForEntry(faceB64),
+				Embedding:  crop.Embedding,
+			}})
+			return &domain.StreamCheckResult{
+				OperationDuration: dur,
+				Status:            "ok",
+				Name:              sampleName,
+				Similarity:        sampleScore,
+				Matched:           true,
+				FaceImage:         faceB64,
+			}, nil
+		}
+	}
+
+	// Deadline reached. Decide the result from the best sample seen.
+	dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+	if faceSeen {
+		sim := bestScore
+		if sim < 0 {
+			sim = 0
+		}
+		faceB64 := base64.StdEncoding.EncodeToString(bestCrop.Data)
+		_ = s.audit.Append([]domain.AuditEntry{{
+			Time:       time.Now(),
+			Endpoint:   "stream-check",
+			Name:       bestName,
+			Similarity: sim,
+			Matched:    false,
+			Status:     domain.AuditStatusNotMatched,
+			DurationMs: dur.DurationMs,
+			FaceImage:  faceB64,
+			FaceThumb:  thumbnailForEntry(faceB64),
+			Embedding:  bestCrop.Embedding,
+		}})
+		return &domain.StreamCheckResult{
+			OperationDuration: dur,
+			Status:            "not ok",
+			Reason:            "Face detected but similarity below threshold",
+			Name:              bestName,
+			Similarity:        sim,
+			Matched:           false,
+			FaceImage:         faceB64,
+		}, nil
+	}
+
+	// No face seen at all: record a no_face entry with a downscaled frame.
+	frameB64 := noFaceFrameFromRGB(w, h, scratch[:w*h*3])
+	_ = s.audit.Append([]domain.AuditEntry{{
+		Time:       time.Now(),
+		Endpoint:   "stream-check",
+		Name:       "",
+		Similarity: 0,
+		Matched:    false,
+		Status:     domain.AuditStatusNoFace,
+		DurationMs: dur.DurationMs,
+		FaceImage:  frameB64,
+		FaceThumb:  thumbnailForEntry(frameB64),
+	}})
+	return &domain.StreamCheckResult{
+		OperationDuration: dur,
+		Status:            "not ok",
+		Reason:            "No face detected",
+	}, nil
+}
+
+// notOkResult builds a not-ok StreamCheckResult with the elapsed duration.
+func (s *FaceServiceImpl) notOkResult(start time.Time, reason string, similarity float32, crop *domain.FaceCrop, matched bool) (*domain.StreamCheckResult, error) {
+	dur := domain.OperationDuration{DurationMs: time.Since(start).Milliseconds()}
+	res := &domain.StreamCheckResult{
+		OperationDuration: dur,
+		Status:            "not ok",
+		Reason:            reason,
+		Similarity:        similarity,
+		Matched:           matched,
+	}
+	if crop != nil {
+		res.FaceImage = base64.StdEncoding.EncodeToString(crop.Data)
+	}
+	return res, nil
+}
+
+// --- PromoteFromAudit promotes an audit entry to an enrolled user.
 // The auditTime is the RFC3339 timestamp of the audit entry to promote.
 func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error {
 	// Load all audit entries and find the one matching the timestamp
@@ -595,6 +843,32 @@ func noFaceFrameImage(imageData []byte) string {
 	if longest > noFaceFrameMaxDim {
 		scale := float64(noFaceFrameMaxDim) / float64(longest)
 		dst := imaging.NewRGB(round(float64(img.W)*scale), round(float64(img.H)*scale))
+		imaging.ResizeInto(dst, img)
+		img = dst
+	}
+	data, err := imaging.EncodeJPEG(img)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// noFaceFrameFromRGB downscales a decoded RGB frame so its longest side is at
+// most noFaceFrameMaxDim and returns it as a base64 JPEG. It is used by the
+// burst scanner when no face is detected, so the audit entry can still show
+// what the camera saw.
+func noFaceFrameFromRGB(w, h int, pix []byte) string {
+	if w <= 0 || h <= 0 || len(pix) < w*h*3 {
+		return ""
+	}
+	img := &imaging.RGBImage{W: w, H: h, Pix: pix}
+	longest := w
+	if h > longest {
+		longest = h
+	}
+	if longest > noFaceFrameMaxDim {
+		scale := float64(noFaceFrameMaxDim) / float64(longest)
+		dst := imaging.NewRGB(round(float64(w)*scale), round(float64(h)*scale))
 		imaging.ResizeInto(dst, img)
 		img = dst
 	}
