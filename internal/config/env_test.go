@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -132,5 +133,36 @@ func TestSampleInterval(t *testing.T) {
 				t.Errorf("SampleInterval(%q) = %v, want %v", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "with credentials", in: "rtsp://user:pass@cam:554/stream", want: "rtsp://redacted@cam:554/stream"},
+		{name: "without credentials", in: "rtsp://cam:554/stream", want: "rtsp://cam:554/stream"},
+		{name: "not a url", in: "not a url", want: "not a url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactURL(tt.in); got != tt.want {
+				t.Errorf("RedactURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A redacted URL must never contain the original password.
+func TestRedactURLRemovesPassword(t *testing.T) {
+	got := RedactURL("rtsp://admin:IzmirAlmere123!@192.168.178.23:554/h264Preview_01_sub")
+	if strings.Contains(got, "IzmirAlmere123") {
+		t.Fatalf("RedactURL leaked the password: %q", got)
+	}
+	if !strings.Contains(got, "192.168.178.23:554/h264Preview_01_sub") {
+		t.Fatalf("RedactURL dropped the host/path: %q", got)
 	}
 }

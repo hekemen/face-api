@@ -147,7 +147,7 @@ func main() {
 	logger.Info().
 		Str("alignment", string(align)).
 		Int("intra_op_threads", threads).
-		Str("rtsp_stream_url", os.Getenv("RTSP_STREAM_URL")).
+		Str("rtsp_stream_url", config.RedactURL(os.Getenv("RTSP_STREAM_URL"))).
 		Msg("face API wired")
 
 	// Start the buffered frame source (if a sub-stream URL is configured).

@@ -10,6 +10,7 @@ import (
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 	bolt "go.etcd.io/bbolt"
 
+	"h2hsecure.com/face/internal/config"
 	"h2hsecure.com/face/internal/domain"
 	"h2hsecure.com/face/internal/framesource"
 	fhttp "h2hsecure.com/face/internal/http"
@@ -114,7 +115,7 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		faceService.WithFrameSource(src)
 		faceService.WithBurst(cfg.BurstWindow, cfg.SampleInterval)
 		cfg.Logger.Info().
-			Str("stream_url", cfg.StreamURL).
+			Str("stream_url", config.RedactURL(cfg.StreamURL)).
 			Dur("burst_window", cfg.BurstWindow).
 			Dur("sample_interval", cfg.SampleInterval).
 			Msg("live burst pipeline enabled")

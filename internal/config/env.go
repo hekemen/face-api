@@ -3,10 +3,25 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// RedactURL removes the userinfo (credentials) from a URL so it can be
+// written to logs. A URL that cannot be parsed is returned unchanged.
+func RedactURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User("redacted")
+	return u.String()
+}
 
 const (
 	envOnnxIntraOpThreads = "ONNX_INTRA_OP_THREADS"
