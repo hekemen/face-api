@@ -114,6 +114,10 @@ func NewFaceAPI(cfg Config) (*FaceAPI, error) {
 		src = framesource.New(cfg.StreamURL, cfg.Logger)
 		faceService.WithFrameSource(src)
 		faceService.WithBurst(cfg.BurstWindow, cfg.SampleInterval)
+		// The cold-buffer fallback uses the one-shot RTSP URL (the main
+		// stream), which is a better source for matching than the buffered
+		// sub-stream because faces are much larger in it.
+		faceService.WithStreamURL(cfg.RTSPURL)
 		cfg.Logger.Info().
 			Str("stream_url", config.RedactURL(cfg.StreamURL)).
 			Dur("burst_window", cfg.BurstWindow).
