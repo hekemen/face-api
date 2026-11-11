@@ -222,17 +222,22 @@ func TestDecodeBestFaceRoundHalfAwayFromZero(t *testing.T) {
 // reports HasKPs=false instead of erroring. The arcface5 path wires real KPs
 // in Task 8; until then the processor must degrade to the bbox crop.
 // TestDecodeBestFaceMatchesProductionRounding pins that the box is computed
-// from the exact float64 canvas→frame quotient (round, then clamp to the
-// frame as integers), exactly as the original production code did. Using a
-// non-power-of-two scale (1920×1080 → scale 1/3) exercises the float64
-// division path that float32 narrowing would quietly corrupt.
+// from the exact float64 canvas→frame quotient (round half away from zero,
+// then clamp to the frame as integers), exactly as the original production
+// code did. A non-power-of-two scale (1920×1080 → 1/3) exercises the float64
+// division path.
+//
+// The chosen regs make canvasX = 7.8333…, whose quotient is 23.4999… (just
+// below .5). float32 narrowing rounds it up to exactly 23.5, so the old
+// float32-narrowed formula yields x1=24 while the exact float64 formula
+// yields x1=23. This discriminates the two.
 func TestDecodeBestFaceMatchesProductionRounding(t *testing.T) {
 	outs := validDetOutputs()
 
-	// Stride 8, anchor 2: cx=8, cy=0. regs {-0.25, -0.25, 1.75, 1.75} give the
-	// canvas box {10, 2, 22, 14}.
+	// Stride 8, anchor 2: cx=8, cy=0. regs {0.020833367, 0, 1, 1} give the
+	// canvas box {7.833…, 0, 16, 8}.
 	outs[0].Scores[2] = 0.9
-	copy(outs[0].Boxes[2*4:], []float32{-0.25, -0.25, 1.75, 1.75})
+	copy(outs[0].Boxes[2*4:], []float32{0.020833367, 0, 1, 1})
 
 	// 1920×1080 frame → PadSquareInto scale = 640/max(1920,1080) = 640/1920.
 	scale := 640.0 / 1920.0
@@ -242,20 +247,24 @@ func TestDecodeBestFaceMatchesProductionRounding(t *testing.T) {
 	}
 
 	// Production formula: int(math.Round(float64(canvasX) / scale)),
-	// clamped to [0,w]×[0,h].
-	x1 := int(math.Round(float64(10) / scale)) // round(30) = 30
-	y1 := int(math.Round(float64(2) / scale))  // round(6) = 6
-	x2 := int(math.Round(float64(22) / scale)) // round(66) = 66
-	y2 := int(math.Round(float64(14) / scale)) // round(42) = 42
+	// clamped to [0,w]×[0,h]. x1 must round down to 23 (not up to 24).
+	x1 := int(math.Round(float64(8-0.020833367*8) / scale)) // round(23.4999…) = 23
+	y1 := 0
+	x2 := int(math.Round(float64(16) / scale)) // round(48) = 48
+	y2 := int(math.Round(float64(8) / scale))  // round(24) = 24
 	want := [4]float32{float32(x1), float32(y1), float32(x2), float32(y2)}
 	if hit.Box != want {
-		t.Errorf("Box = %v, want %v", hit.Box, want)
+		t.Errorf("Box = %v, want %v (23.4999… must round to 23, not float32-narrow to 23.5→24)", hit.Box, want)
 	}
 	if hit.Box[0] > float32(1920) || hit.Box[2] > float32(1920) || hit.Box[1] > float32(1080) || hit.Box[3] > float32(1080) {
 		t.Error("Box not clamped to frame")
 	}
 }
 
+// TestDecodeBestFaceToleratesAbsentKPs pins that keypoints are optional:
+// when a level emits no KPs (nil), decodeBestFace still returns the box and
+// reports HasKPs=false instead of erroring. The arcface5 path wires real KPs
+// in Task 8; until then the processor must degrade to the bbox crop.
 func TestDecodeBestFaceToleratesAbsentKPs(t *testing.T) {
 	outs := validDetOutputs()
 

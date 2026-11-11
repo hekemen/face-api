@@ -165,16 +165,3 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 func mapToFrame(v float32, scale float64) float32 {
 	return float32(float64(v) / scale)
 }
-
-// clampToFrame maps a canvas coordinate back to the frame with the canvas
-// scale and clamps the result to [0, limit].
-func clampToFrame(v float32, scale float64, limit float32) float32 {
-	mapped := mapToFrame(v, scale)
-	if mapped < 0 {
-		return 0
-	}
-	if mapped > limit {
-		return limit
-	}
-	return mapped
-}
