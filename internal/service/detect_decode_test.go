@@ -259,8 +259,8 @@ func TestDecodeBestFaceMatchesProductionRounding(t *testing.T) {
 
 // TestDecodeBestFaceToleratesAbsentKPs pins that keypoints are optional:
 // when a level emits no KPs (nil), decodeBestFace still returns the box and
-// reports HasKPs=false instead of erroring. The arcface5 path wires real KPs
-// in Task 8; until then the processor must degrade to the bbox crop.
+// reports HasKPs=false instead of erroring. The arcface5 alignment path
+// consumes real KPs from the detector outputs (face_processor.go:34-38).
 func TestDecodeBestFaceToleratesAbsentKPs(t *testing.T) {
 	outs := validDetOutputs()
 

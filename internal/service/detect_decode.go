@@ -60,8 +60,8 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 				"decode best face: output size mismatch for stride %d: scores=%d boxes=%d, want %d/%d",
 				lvl.stride, len(level.Scores), len(level.Boxes), n, 4*n)
 		}
-		// KPs are optional until the arcface5 alignment path wires them
-		// (Task 8). When present they must be exactly 10 per anchor.
+		// KPs are optional: when absent, HasKPs stays false and alignment falls
+		// back to the bbox crop. When present they must be exactly 10 per anchor.
 		if len(level.KPs) != 0 && len(level.KPs) != 10*n {
 			return nil, fmt.Errorf(
 				"decode best face: output size mismatch for stride %d: kps=%d, want %d",
