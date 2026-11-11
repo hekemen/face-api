@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt (changed Go files only)
+        run: |
+          git fetch --no-tags --depth=1 origin main || true
+          files=$(git diff --name-only origin/main...HEAD -- '*.go' || true)
+          if [ -z "$files" ]; then echo "no Go changes"; exit 0; fi
+          unformatted=$(gofmt -l $files) || true
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: unit tests
+        run: make test-unit
+
+  integration:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: e2e + rtsp
+        run: make test

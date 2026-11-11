@@ -37,7 +37,7 @@ CONC_VAL = $(if $(strip $(CONCURRENCY)),$(CONCURRENCY),5)
 
 BOUNDARY = ------------------------heyboundary
 
-.PHONY: all build run docker-build docker-build-pi5 docker-run docker-stop docker-build-all docker-push-all docker-push docker-push-latest docker-push-arm64 docker-push-arm64-retry docker-push-arm64-retry-all helm-deploy-pi helm-upgrade-pi download-model install-libonnxruntime download-libonnxruntime install-hey generate-test-image prepare-payload load-test load-test-users load-test-recognize test test-e2e test-rtsp clean help
+.PHONY: all build run docker-build docker-build-pi5 docker-run docker-stop docker-build-all docker-push-all docker-push docker-push-latest docker-push-arm64 docker-push-arm64-retry docker-push-arm64-retry-all helm-deploy-pi helm-upgrade-pi download-model install-libonnxruntime download-libonnxruntime install-hey generate-test-image prepare-payload load-test load-test-users load-test-recognize test test-e2e test-rtsp test-unit clean help
 
 all: build
 
@@ -251,6 +251,10 @@ test-e2e:
 test-rtsp:
 	@echo "Running RTSP stream-check end-to-end tests..."
 	go test -v -count=1 ./test/rtsp/...
+
+test-unit:
+	@echo "Running unit tests (no Docker, no ONNX runtime)..."
+	go test -race -count=1 ./internal/... ./cmd/...
 
 clean:
 	@echo "Cleaning output binaries and temporary files..."
