@@ -40,7 +40,8 @@ type faceHit struct {
 //
 // The function allocates nothing and is safe to call once per camera frame.
 func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) {
-	if scale <= 0 {
+	// Written as a negated > so a NaN scale is rejected too.
+	if !(scale > 0) {
 		return nil, fmt.Errorf("decode best face: invalid canvas scale %v", scale)
 	}
 
@@ -65,9 +66,10 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 			if conf < detThreshold {
 				continue
 			}
-			// Strict comparison: an exact tie keeps the earlier level, so the
-			// lowest stride (the most precise one) wins.
-			if conf <= best.Score {
+			// Negated > (not <=) so a NaN score is skipped instead of being
+			// accepted: NaN comparisons are all false. An exact tie keeps the
+			// earlier level, so the lowest stride (the most precise) wins.
+			if !(conf > best.Score) {
 				continue
 			}
 
@@ -107,6 +109,13 @@ func decodeBestFace(outs detOutputs, scale float64, w, h int) (*faceHit, error) 
 
 	if best.Score < detThreshold {
 		return nil, fmt.Errorf("decode best face: %w", domain.ErrNoFace)
+	}
+	// An inverted box is a processing failure, not an empty frame: image.Rect
+	// canonicalises x1>x2, so a crop would silently use the wrong region.
+	if best.Box[2] <= best.Box[0] || best.Box[3] <= best.Box[1] {
+		return nil, fmt.Errorf(
+			"decode best face: invalid bounding box: x1=%v y1=%v x2=%v y2=%v",
+			best.Box[0], best.Box[1], best.Box[2], best.Box[3])
 	}
 	return &best, nil
 }

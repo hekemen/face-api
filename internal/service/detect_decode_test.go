@@ -44,7 +44,7 @@ func TestDecodeBestFacePicksHighestScore(t *testing.T) {
 		t.Errorf("Score = %v, want 0.9", hit.Score)
 	}
 
-	// Canvas box / scale: (0,-32,64,64); y1 clamps to 0.
+	// Canvas box (0,-16,32,32) / 0.5 = (0,-32,64,64); y1 clamps to 0.
 	want := [4]float32{0, 0, 64, 64}
 	if hit.Box != want {
 		t.Errorf("Box = %v, want %v", hit.Box, want)
@@ -219,7 +219,7 @@ func TestDecodeBestFaceTieKeepsFirst(t *testing.T) {
 }
 
 func TestDecodeBestFaceRejectsBadScale(t *testing.T) {
-	for _, scale := range []float64{0, -0.5} {
+	for _, scale := range []float64{0, -0.5, math.NaN()} {
 		hit, err := decodeBestFace(validDetOutputs(), scale, 640, 640)
 		if err == nil {
 			t.Fatalf("scale %v: err = nil, want an error", scale)
@@ -230,5 +230,116 @@ func TestDecodeBestFaceRejectsBadScale(t *testing.T) {
 		if hit != nil {
 			t.Fatalf("scale %v: hit = %+v, want nil", scale, hit)
 		}
+	}
+}
+
+func TestDecodeBestFaceIgnoresNaNScore(t *testing.T) {
+	t.Run("nan does not hijack a valid detection", func(t *testing.T) {
+		outs := validDetOutputs()
+
+		// anchor 162: cx=8, cy=8 -> box (0,0,24,24) at scale 1.
+		outs[0].Scores[162] = 0.9
+		copy(outs[0].Boxes[162*4:], []float32{1, 1, 2, 2})
+		// A NaN score at a later anchor must be skipped, not selected.
+		outs[0].Scores[163] = float32(math.NaN())
+		copy(outs[0].Boxes[163*4:], []float32{1, 1, 1, 1})
+
+		hit, err := decodeBestFace(outs, 1.0, 640, 640)
+		if err != nil {
+			t.Fatalf("decodeBestFace: %v", err)
+		}
+		if hit.Score != 0.9 {
+			t.Fatalf("Score = %v, want 0.9", hit.Score)
+		}
+		want := [4]float32{0, 0, 24, 24}
+		if hit.Box != want {
+			t.Fatalf("Box = %v, want the finite %v", hit.Box, want)
+		}
+	})
+
+	t.Run("only nan scores means no face", func(t *testing.T) {
+		outs := validDetOutputs()
+		for i := range outs[0].Scores {
+			outs[0].Scores[i] = float32(math.NaN())
+		}
+
+		hit, err := decodeBestFace(outs, 1.0, 640, 640)
+		if !errors.Is(err, domain.ErrNoFace) {
+			t.Fatalf("err = %v, want domain.ErrNoFace", err)
+		}
+		if hit != nil {
+			t.Fatalf("hit = %+v, want nil", hit)
+		}
+	})
+}
+
+func TestDecodeBestFaceRejectsInvertedBox(t *testing.T) {
+	// anchor 162: cx=8, cy=8, stride 8.
+	tests := []struct {
+		name    string
+		regs    [4]float32
+		wantErr bool
+	}{
+		// x1 = 8-(-1*8) = 16, x2 = 8+(-2*8) = -8 (clamped to 0) -> inverted.
+		{name: "inverted", regs: [4]float32{-1, 1, -2, 2}, wantErr: true},
+		{name: "valid", regs: [4]float32{1, 1, 2, 2}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outs := validDetOutputs()
+			outs[0].Scores[162] = 0.9
+			copy(outs[0].Boxes[162*4:], tt.regs[:])
+
+			hit, err := decodeBestFace(outs, 1.0, 640, 640)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("hit = %+v, want an error", hit)
+				}
+				if errors.Is(err, domain.ErrNoFace) {
+					t.Fatalf("err = %v, must not be domain.ErrNoFace", err)
+				}
+				if hit != nil {
+					t.Fatalf("hit = %+v, want nil", hit)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeBestFace: %v", err)
+			}
+			want := [4]float32{0, 0, 24, 24}
+			if hit.Box != want {
+				t.Errorf("Box = %v, want %v", hit.Box, want)
+			}
+		})
+	}
+}
+
+func TestDecodeBestFaceStride32(t *testing.T) {
+	outs := validDetOutputs()
+
+	// Stride 32, anchor 42: cell 21 -> row 1, col 1, so cx=32, cy=32. With
+	// regs {1,1,2,2} the canvas box is (0,0,96,96) and maps 1:1 at scale 1.
+	const idx = 42
+	outs[2].Scores[idx] = 0.8
+	copy(outs[2].Boxes[idx*4:], []float32{1, 1, 2, 2})
+
+	hit, err := decodeBestFace(outs, 1.0, 640, 640)
+	if err != nil {
+		t.Fatalf("decodeBestFace: %v", err)
+	}
+	if hit.Score != 0.8 {
+		t.Errorf("Score = %v, want 0.8", hit.Score)
+	}
+	wantBox := [4]float32{0, 0, 96, 96}
+	if hit.Box != wantBox {
+		t.Errorf("Box = %v, want the stride-32 box %v", hit.Box, wantBox)
+	}
+	if !hit.HasKPs {
+		t.Fatal("HasKPs = false, want true")
+	}
+	wantKP := [2]float32{32, 32}
+	if hit.KPs[0] != wantKP {
+		t.Errorf("KPs[0] = %v, want %v", hit.KPs[0], wantKP)
 	}
 }
