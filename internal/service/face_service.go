@@ -64,16 +64,42 @@ func New(users domain.UserRepository, audit domain.AuditRepository,
 func (s *FaceServiceImpl) usersInActiveSpace(users []*domain.User) []*domain.User {
 	out := make([]*domain.User, 0, len(users))
 	for _, u := range users {
-		mode := u.Alignment
-		if mode == "" {
-			mode = string(AlignmentBBox)
-		}
-		if mode != s.alignment {
+		if storedAlignment(u) != s.alignment {
 			continue
 		}
 		out = append(out, u)
 	}
 	return out
+}
+
+// storedAlignment returns the alignment mode of a stored user record.
+//
+// A record with no stored mode predates the field, so its embeddings were
+// made by the bbox crop — that is the only mode that existed then.
+func storedAlignment(u *domain.User) string {
+	if u == nil || u.Alignment == "" {
+		return string(AlignmentBBox)
+	}
+	return u.Alignment
+}
+
+// checkAlignmentSpace returns an error when a user record's embeddings were
+// made in a different alignment space than the active one.
+//
+// Adding a photo to such a record would mix the two spaces in one user's
+// embeddings, and the matcher would then compare them against a capture in
+// the active space — the meaningless comparison the alignment bookkeeping
+// exists to prevent.
+func (s *FaceServiceImpl) checkAlignmentSpace(u *domain.User) error {
+	if u == nil {
+		return nil
+	}
+	if stored := storedAlignment(u); stored != s.alignment {
+		return fmt.Errorf(
+			"%s was enrolled with %s alignment and cannot be mixed with %s; re-enroll them instead",
+			u.Name, stored, s.alignment)
+	}
+	return nil
 }
 
 // WithLogger sets the logger for the service.
@@ -194,6 +220,12 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 	// Check max pictures limit
 	u, err := s.users.GetByName(name)
 	if err != nil && err.Error() != fmt.Sprintf("user %q not found", name) {
+		return err
+	}
+	// Adding a photo to a record made in another alignment space would mix
+	// the two spaces in one user's embeddings, and the matcher would then
+	// compare a bbox enrollment against an arcface5 capture.
+	if err := s.checkAlignmentSpace(u); err != nil {
 		return err
 	}
 	if u != nil && len(u.Embeddings) >= domain.MaxPicturesPerUser {
@@ -636,8 +668,33 @@ outer:
 		}, nil
 	}
 
-	// No face seen at all, or face seen but no users to match against:
-	// record a no_face entry with a downscaled frame.
+	// A face was detected but no user could be compared with it, because
+	// every enrolled user was made in another alignment space. That is a
+	// different situation from "nobody was at the camera", and saying
+	// "No face detected" sends the operator to debug the camera instead of
+	// re-enrolling the users.
+	if faceSeen && bestCrop == nil {
+		frameB64 := noFaceFrameFromRGB(w, h, lastFrame)
+		_ = s.audit.Append([]domain.AuditEntry{{
+			Time:       time.Now(),
+			Endpoint:   "stream-check",
+			Name:       "",
+			Similarity: 0,
+			Matched:    false,
+			Status:     domain.AuditStatusNotMatched,
+			DurationMs: dur.DurationMs,
+			FaceImage:  frameB64,
+			FaceThumb:  thumbnailForEntry(frameB64),
+		}})
+		return &domain.StreamCheckResult{
+			OperationDuration: dur,
+			Status:            "not ok",
+			Reason:            fmt.Sprintf("Face detected but no user is enrolled with %s alignment", s.alignment),
+			FaceImage:         frameB64,
+		}, nil
+	}
+
+	// No face seen at all: record a no_face entry with a downscaled frame.
 	frameB64 := noFaceFrameFromRGB(w, h, lastFrame)
 	_ = s.audit.Append([]domain.AuditEntry{{
 		Time:       time.Now(),
@@ -711,7 +768,13 @@ func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error 
 	}
 
 	if u != nil {
-		// User exists, append to them
+		// User exists, append to them. The audit entry's embedding was
+		// produced in the active space, so the record's space has to match
+		// or the two would be mixed.
+		if err := s.checkAlignmentSpace(u); err != nil {
+			s.logf("promote: alignment mismatch", "name", name, "error", err)
+			return err
+		}
 		if len(u.Embeddings) >= domain.MaxPicturesPerUser {
 			s.logf("promote: max pictures reached", "name", name, "pictures", len(u.Embeddings))
 			return fmt.Errorf("maximum %d pictures per user", domain.MaxPicturesPerUser)
@@ -725,12 +788,15 @@ func (s *FaceServiceImpl) PromoteFromAudit(auditTime string, name string) error 
 		}
 		s.logf("promote: updated existing user", "name", name, "total_pictures", len(u.Pictures))
 	} else {
-		// Create the user from the audit entry
+		// Create the user from the audit entry. The embedding came from the
+		// active alignment space, so the record says so: a record with no
+		// mode is treated as a legacy bbox enrollment and would be skipped.
 		user := &domain.User{
 			Name:       name,
 			Embeddings: []domain.FaceEmbedding{entry.Embedding},
 			Pictures:   []string{entry.FaceImage},
 			UpdatedAt:  time.Now(),
+			Alignment:  s.alignment,
 		}
 
 		if err := s.users.Save(user); err != nil {
@@ -792,6 +858,11 @@ func (s *FaceServiceImpl) DeletePicture(name string, index int) error {
 		Embeddings: embeddings,
 		Pictures:   pictures,
 		UpdatedAt:  time.Now(),
+		// The remaining photos were all made in the same space as the
+		// deleted one, so the record keeps its alignment. Losing it would
+		// make the record look like a legacy bbox enrollment, and under
+		// arcface5 the user would stop matching entirely.
+		Alignment: u.Alignment,
 	}
 	if err := s.users.Save(updated); err != nil {
 		return fmt.Errorf("save user: %w", err)

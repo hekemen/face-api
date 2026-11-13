@@ -71,8 +71,28 @@ func (m *burstUserRepo) Exists(name string) (bool, error) {
 	return false, nil
 }
 
-func (m *burstUserRepo) Save(u *domain.User) error { return nil }
-func (m *burstUserRepo) Delete(name string) error  { return nil }
+// Save stores the user, replacing any record with the same name, so a test
+// can read back what the service wrote.
+func (m *burstUserRepo) Save(u *domain.User) error {
+	for i, existing := range m.users {
+		if existing.Name == u.Name {
+			m.users[i] = u
+			return nil
+		}
+	}
+	m.users = append(m.users, u)
+	return nil
+}
+
+func (m *burstUserRepo) Delete(name string) error {
+	for i, existing := range m.users {
+		if existing.Name == name {
+			m.users = append(m.users[:i], m.users[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
 
 func (m *burstUserRepo) ListAll() ([]*domain.User, error) {
 	m.listAllCalls++
