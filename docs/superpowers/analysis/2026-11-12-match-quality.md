@@ -165,10 +165,37 @@ false positives.
   offline measurement.
 - The four existing users show `alignment=''` and are skipped, as intended.
 
+### After re-enrollment (2026-11-13)
+
+`admin` was re-enrolled from the live 5 MP camera with `cmd/reenroll`
+(5 distinct photos, `alignment: arcface5`, updated 2026-11-13T09:40:37Z).
+
+End-to-end check against the new enrollment, `POST /stream-check` with a
+fresh camera capture:
+
+| Field | Value |
+|---|---|
+| status | `ok` |
+| name | `admin` |
+| similarity | **0.5922** |
+| matched | `true` |
+| duration_ms | 461 |
+| threshold | 0.45 (margin **+0.142**) |
+
+The live same-person score (0.5922) lands in the predicted arcface5 band
+(0.6252 offline, same person) and comfortably above the current 0.45
+threshold, which the old bbox enrollments never reached (their same-person
+band was 0.07–0.38).
+
 ### Still to do
 
-Re-enroll the four users from the camera (someone must stand in frame), then
-set the threshold from the measured separation and re-run the sweep.
+- Re-enroll the remaining three users (`Ali`, `Cemre`, `serap`) from the
+  camera — someone must stand in frame, and a dry day helps. Until then they
+  stay on their legacy `bbox` records and are skipped by the matcher (no
+  cross-space comparison, no false matches).
+- Only after all users are re-enrolled: run the stranger-band sweep
+  (`scripts/collect-samples.sh` + `scripts/analyze-samples.py`) and pick the
+  threshold from the measured separation.
 
 ```bash
 export FACE_API_TOKEN=<token>
