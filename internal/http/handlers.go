@@ -318,6 +318,11 @@ func (h *Handlers) handleListUsers(w http.ResponseWriter, r *http.Request) {
 					"name":       u.Name,
 					"pictures":   u.Pictures,
 					"updated_at": u.UpdatedAt.Format(time.RFC3339),
+					// The alignment mode the embeddings were made with. A
+					// user enrolled in another mode is skipped by the
+					// matcher, so the operator needs to see it to know who
+					// still has to be re-enrolled.
+					"alignment": u.Alignment,
 				})
 				break
 			}

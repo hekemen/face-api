@@ -64,7 +64,7 @@ Set environment variables via `.env` file or `docker run --env-file`:
 |----------|-------------|
 | `RTSP_URL` | Default RTSP camera URL for stream-check and for MQTT burst scanning; used when the request omits `rtsp_url` |
 | `ONNX_INTRA_OP_THREADS` | ONNX intra-op threads for both sessions (default: `4`, `0` = ONNX default) |
-| `FACE_ALIGNMENT` | Crop alignment: `bbox` (default) or `arcface5` (opt-in, requires re-enrollment) |
+| `FACE_ALIGNMENT` | Crop alignment: `bbox` (default) or `arcface5` (recommended for the camera pipeline; requires re-enrollment after switching) |
 | `TRIGGER_BURST_MS` | Burst window in milliseconds (default: `4000`) |
 | `TRIGGER_SAMPLE_MS` | Minimum gap between scored frames in milliseconds (default: `200`) |
 | `MQTT_QUEUE_DEPTH` | Pending trigger slots (default: `1`, coalesces repeat triggers) |
@@ -102,3 +102,28 @@ Key behaviours:
   different embedding space and **requires deleting and re-enrolling all users**.
 - **Connection failures are not scan outcomes.** If the camera cannot be
   reached, the burst returns `not ok` and writes no audit row.
+
+### Switching alignment mode
+
+`FACE_ALIGNMENT=arcface5` warps the five detected landmarks onto the ArcFace
+template before embedding. Measured, this widens the gap between a genuine
+match and a stranger by 52%: the same person scores 0.63 instead of 0.52,
+and a stranger 0.07 instead of 0.16.
+
+The two modes produce different embedding spaces, so **switching the mode
+requires re-enrolling every user**. A user enrolled in one mode is skipped
+when the other mode is active, rather than being matched on an incomparable
+score: measured, a `bbox` enrollment scores 0.80 against the same photo in
+`arcface5` space, which looks like a strong match but reflects the crop
+rather than the face.
+
+To re-enroll a user from the camera:
+
+```bash
+go run ./cmd/reenroll -url "$CAMERA_URL" -api "$API_URL" -token "$TOKEN" -name <user> -pictures 5
+```
+
+The command captures full-resolution frames from the camera, keeps the ones
+that differ from each other, and replaces the user's record. The old record is
+deleted only after a new capture has been accepted, so a failed capture cannot
+leave the user with nothing.
