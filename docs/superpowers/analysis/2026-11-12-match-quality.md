@@ -121,3 +121,62 @@ widens the gap a threshold can live in.
 Re-enrolling is needed regardless: the burst pipeline now captures at 5 MP,
 and the existing enrollments were made from lower-resolution or
 poorly-aligned sources, so they are not comparable to new captures.
+
+## 7. After the switch to arcface5 (2026-11-13)
+
+Implemented and deployed: Helm rev 34, image `sha256:5773f23d…`, the log
+line reads `"alignment":"arcface5"`.
+
+### The alignment spaces are not interchangeable
+
+Measured with the real models, same two photos of the same person:
+
+| Comparison | Score |
+|---|---|
+| bbox vs bbox (same space) | 0.5244 |
+| arcface5 vs arcface5 (same space) | 0.6252 |
+| **bbox vs arcface5 (cross space, same photo)** | **0.7961** |
+| bbox vs arcface5 (cross space, different photo) | 0.5219 |
+| stranger(bbox) vs person(arcface5) | 0.0860 |
+| person(bbox) vs stranger(arcface5) | 0.1388 |
+
+The cross-space row is the danger: a `bbox` enrollment scores 0.80 against
+the *same photo* in `arcface5` space. That looks like a strong match but
+reflects the crop, not the face, so comparing across spaces would produce
+false positives.
+
+### What was built to prevent it
+
+- Each enrollment records the mode that produced it (`domain.User.Alignment`,
+  stored as `alignment` in the Faces bucket).
+- `FaceServiceImpl.usersInActiveSpace` skips a user whose stored mode differs
+  from the processor's, so the matcher never compares across spaces.
+- A record with **no** stored mode predates the field, so it is a `bbox`
+  enrollment — `arcface5` did not exist before the field was added. It is
+  therefore skipped under `arcface5` and comparable under `bbox`, so an
+  upgrade that does not change the mode breaks nothing.
+- `GET /users` reports each user's `alignment`, so "this user silently
+  stopped matching" is visible.
+
+### Verified live
+
+- A new enrollment is stamped `arcface5` and matches: the same photo scores
+  1.0000, the second photo of the same person scores **0.6252** — exactly the
+  offline measurement.
+- The four existing users show `alignment=''` and are skipped, as intended.
+
+### Still to do
+
+Re-enroll the four users from the camera (someone must stand in frame), then
+set the threshold from the measured separation and re-run the sweep.
+
+```bash
+export FACE_API_TOKEN=<token>
+scripts/reenroll-users.sh          # one user at a time, from the camera
+```
+
+`scripts/reenroll-users.sh` wraps `cmd/reenroll`, which captures
+full-resolution frames, keeps the ones that differ from each other, and
+replaces the user's record — deleting the old one only after a new capture
+has been accepted, so a failed capture cannot leave a user with nothing.
+
