@@ -64,6 +64,7 @@ func (r *UserRepository) GetByName(name string) (*domain.User, error) {
 			Embeddings: stored.Embeddings,
 			Pictures:   stored.Pictures,
 			UpdatedAt:  updatedAt,
+			Alignment:  stored.Alignment,
 		}
 		return nil
 	})
@@ -90,6 +91,7 @@ func (r *UserRepository) Save(u *domain.User) error {
 		Embeddings: u.Embeddings,
 		Pictures:   u.Pictures,
 		UpdatedAt:  u.UpdatedAt.Format(time.RFC3339),
+		Alignment:  u.Alignment,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal user: %w", err)
@@ -139,6 +141,7 @@ func (r *UserRepository) ListAll() ([]*domain.User, error) {
 				Embeddings: stored.Embeddings,
 				Pictures:   stored.Pictures,
 				UpdatedAt:  updatedAt,
+				Alignment:  stored.Alignment,
 			})
 			return nil
 		})
@@ -246,6 +249,7 @@ type storedUser struct {
 	Embeddings []domain.FaceEmbedding `json:"embeddings"`
 	Pictures   []string               `json:"pictures,omitempty"`
 	UpdatedAt  string                 `json:"updated_at,omitempty"`
+	Alignment  string                 `json:"alignment,omitempty"`
 }
 
 // legacyToUser handles legacy embedding-array formats (flat or nested).

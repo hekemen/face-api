@@ -23,6 +23,11 @@ type User struct {
 	Embeddings []FaceEmbedding
 	Pictures   []string // base64-encoded cropped face JPEGs (up to MaxPicturesPerUser)
 	UpdatedAt  time.Time
+	// Alignment records the crop mode that produced this user's embeddings
+	// ("bbox" or "arcface5"). Embeddings from different modes are not
+	// comparable, so a mismatch must be detected rather than assumed away.
+	// An empty value means the mode is unknown.
+	Alignment string
 }
 
 // AuditEntry records a single face scan attempt for the audit log.
