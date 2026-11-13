@@ -69,8 +69,7 @@ func TestPickDistinctCapturesHandlesFewerFrames(t *testing.T) {
 }
 
 // TestFramesDiffer verifies the frame comparison used to tell one moment
-// from another: two frames that differ anywhere in their first bytes count
-// as different.
+// from another.
 func TestFramesDiffer(t *testing.T) {
 	if framesDiffer([]byte{1, 2, 3}, []byte{1, 2, 3}) {
 		t.Error("identical frames reported as different")
@@ -78,7 +77,23 @@ func TestFramesDiffer(t *testing.T) {
 	if !framesDiffer([]byte{1, 2, 3}, []byte{1, 2, 4}) {
 		t.Error("different frames reported as the same")
 	}
-	if framesDiffer([]byte{1, 2, 3}, []byte{1, 2}) {
-		t.Error("frames of different lengths should not be equal")
+	if !framesDiffer([]byte{1, 2, 3}, []byte{1, 2}) {
+		t.Error("frames of different lengths are different pictures")
+	}
+}
+
+// TestFramesDifferSeparatesSameSceneJPEGs is a regression test for the old
+// first-64-bytes comparison: JPEG frames of the same scene share an identical
+// header for their first hundreds of bytes, so two moments captured a second
+// apart have equal first bytes but are different pictures.
+func TestFramesDifferSeparatesSameSceneJPEGs(t *testing.T) {
+	header := make([]byte, 200)
+	for i := range header {
+		header[i] = byte(i)
+	}
+	a := append(append([]byte{}, header...), 1, 2, 3)
+	b := append(append([]byte{}, header...), 9, 8, 7)
+	if !framesDiffer(a, b) {
+		t.Error("frames with the same header but different content reported as the same")
 	}
 }

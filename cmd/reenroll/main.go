@@ -19,6 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -229,18 +230,19 @@ func pickDistinctCaptures(frames [][]byte, want int) [][]byte {
 	return out
 }
 
-// framesDiffer reports whether two frames are different pictures. The
-// comparison covers the first bytes only, which is enough to separate two
-// moments without hashing a whole 5 MP frame.
+// framesDiffer reports whether two frames are different pictures.
+//
+// The checksum covers the whole frame: comparing only the first bytes is not
+// enough, because JPEG frames of the same scene share an identical header
+// (SOI, JFIF, DQT, SOF0) for their first hundreds of bytes, and two moments
+// captured a second apart would be reported as the same picture. CRC32 over
+// a 5 MP frame takes well under a millisecond, so hashing the whole frame
+// costs nothing.
 func framesDiffer(a, b []byte) bool {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
+	if len(a) != len(b) {
+		return true
 	}
-	if n > 64 {
-		n = 64
-	}
-	return !bytes.Equal(a[:n], b[:n])
+	return crc32.ChecksumIEEE(a) != crc32.ChecksumIEEE(b)
 }
 
 // enrollOne uploads one photo for the user.
