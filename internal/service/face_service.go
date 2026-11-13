@@ -262,6 +262,7 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 	// Only users whose embeddings are comparable with the active alignment
 	// mode can be matched against this capture.
 	users = s.usersInActiveSpace(users)
+	s.logf("comparable users", "count", len(users), "alignment", s.alignment)
 
 	var bestName string
 	var bestScore float32 = -1.0
@@ -363,6 +364,11 @@ func (s *FaceServiceImpl) CheckStreamImage(imageData []byte) (*domain.StreamChec
 	}
 
 	s.logf("checking users", "user_count", len(users), "timestamp", time.Now().Format(time.RFC3339))
+
+	// Only users whose embeddings are comparable with the active alignment
+	// mode can be matched against this capture.
+	users = s.usersInActiveSpace(users)
+	s.logf("comparable users", "count", len(users), "alignment", s.alignment)
 
 	var bestName string
 	var highestScore float32 = -1.0
@@ -468,6 +474,7 @@ func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckRes
 	// Only users whose embeddings are comparable with the active alignment
 	// mode can be matched against a fresh capture.
 	users = s.usersInActiveSpace(users)
+	s.logf("comparable users", "count", len(users), "alignment", s.alignment)
 
 	start := time.Now()
 	var (
