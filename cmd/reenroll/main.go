@@ -17,14 +17,15 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -66,12 +67,34 @@ func main() {
 	}
 }
 
+// interruptibleContext returns a context that is cancelled on SIGINT or
+// SIGTERM.
+//
+// The command has a window in which the old record is gone and the new one
+// is not yet written. Cancelling on an interrupt lets the in-flight request
+// finish or abort cleanly, rather than leaving the process killed mid-write.
+func interruptibleContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sig:
+			fmt.Fprintln(os.Stderr, "\nreenroll: interrupted")
+			cancel()
+		case <-ctx.Done():
+		}
+		signal.Stop(sig)
+	}()
+	return ctx, cancel
+}
+
 func run(cameraURL, apiURL, token, name string, pictures int, outDir string) error {
 	log := zerolog.New(os.Stderr).With().Timestamp().Logger()
 
 	fmt.Printf("Capturing %d photos of %s from the camera. Stand in frame.\n", pictures, name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := interruptibleContext(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	grabber := framesource.NewGrabber(cameraURL, log)
@@ -138,14 +161,14 @@ func replaceEnrollment(ctx context.Context, apiURL, token, name string, frames [
 	if len(frames) == 0 {
 		return fmt.Errorf("no frames to enroll")
 	}
-	if err := verifyPhotos(apiURL, token, name, frames); err != nil {
+	if err := verifyPhotos(ctx, apiURL, token, name, frames); err != nil {
 		return err
 	}
-	if err := deleteUser(apiURL, token, name); err != nil {
+	if err := deleteUser(ctx, apiURL, token, name); err != nil {
 		return fmt.Errorf("delete old record: %w", err)
 	}
 	for i, f := range frames {
-		if err := enrollOne(apiURL, token, name, f); err != nil {
+		if err := enrollOne(ctx, apiURL, token, name, f); err != nil {
 			return fmt.Errorf("enroll photo %d: %w", i+1, err)
 		}
 	}
@@ -158,17 +181,21 @@ func replaceEnrollment(ctx context.Context, apiURL, token, name string, frames [
 // A frame with no face in it is rejected by the API. Discovering that
 // before the old record is deleted is what keeps a failed re-enrollment
 // from costing the user their existing photos.
-func verifyPhotos(apiURL, token, name string, frames [][]byte) error {
+//
+// The scratch user is always removed, including when a photo is rejected or
+// the command is interrupted: it is a fully enrolled, matchable identity, and
+// a leftover one would be reported by the matcher as a match.
+func verifyPhotos(ctx context.Context, apiURL, token, name string, frames [][]byte) error {
 	scratch := scratchName(name)
+	// Remove any scratch user left by an earlier interrupted run, so it
+	// cannot fill the picture cap and make this run fail.
+	_ = deleteUser(ctx, apiURL, token, scratch)
+	defer func() { _ = deleteUser(ctx, apiURL, token, scratch) }()
+
 	for i, f := range frames {
-		if err := enrollOne(apiURL, token, scratch, f); err != nil {
-			// Clean up the scratch user before reporting the failure.
-			_ = deleteUser(apiURL, token, scratch)
+		if err := enrollOne(ctx, apiURL, token, scratch, f); err != nil {
 			return fmt.Errorf("photo %d was rejected by the API (%w); the existing enrollment is unchanged", i+1, err)
 		}
-	}
-	if err := deleteUser(apiURL, token, scratch); err != nil {
-		return fmt.Errorf("remove verification user: %w", err)
 	}
 	return nil
 }
@@ -217,7 +244,7 @@ func framesDiffer(a, b []byte) bool {
 }
 
 // enrollOne uploads one photo for the user.
-func enrollOne(apiURL, token, name string, photo []byte) error {
+func enrollOne(ctx context.Context, apiURL, token, name string, photo []byte) error {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	if err := w.WriteField("name", name); err != nil {
@@ -234,7 +261,7 @@ func enrollOne(apiURL, token, name string, photo []byte) error {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, apiURL+"/enroll", &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL+"/enroll", &body)
 	if err != nil {
 		return err
 	}
@@ -254,8 +281,8 @@ func enrollOne(apiURL, token, name string, photo []byte) error {
 
 // deleteUser removes the user's existing record. A missing user is not an
 // error: there may be nothing to replace.
-func deleteUser(apiURL, token, name string) error {
-	req, err := http.NewRequest(http.MethodDelete, apiURL+"/users/"+name, nil)
+func deleteUser(ctx context.Context, apiURL, token, name string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL+"/users/"+name, nil)
 	if err != nil {
 		return err
 	}
@@ -271,10 +298,6 @@ func deleteUser(apiURL, token, name string) error {
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(msg))
-	}
-	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil // the delete succeeded; the body is informational
 	}
 	return nil
 }
