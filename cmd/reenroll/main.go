@@ -118,27 +118,64 @@ func run(cameraURL, apiURL, token, name string, pictures int, outDir string) err
 		}
 	}
 
-	// The first new photo must be accepted before the old record is
-	// removed, so a capture the API rejects (no face in it, say) cannot
-	// leave the user with nothing.
-	if err := enrollOne(apiURL, token, name, distinct[0]); err != nil {
-		return fmt.Errorf("enroll first photo: %w", err)
-	}
-	fmt.Printf("  enrolled the first photo; replacing the old record\n")
-
-	if err := deleteUser(apiURL, token, name); err != nil {
-		return fmt.Errorf("delete old record: %w", err)
-	}
-
-	for i, f := range distinct[1:] {
-		if err := enrollOne(apiURL, token, name, f); err != nil {
-			return fmt.Errorf("enroll photo %d: %w", i+2, err)
-		}
-		fmt.Printf("  enrolled photo %d\n", i+2)
+	// Replace the user's photos. The old record is only removed once every
+	// new photo has been verified against the API.
+	if err := replaceEnrollment(ctx, apiURL, token, name, distinct); err != nil {
+		return err
 	}
 
 	fmt.Printf("Done: %s now has %d photos in the current alignment space.\n", name, len(distinct))
 	return nil
+}
+
+// replaceEnrollment replaces a user's photos with the given frames.
+//
+// The order is: verify every frame against the API, delete the old record,
+// then enroll the new frames. Enrolling appends, so the delete has to come
+// first; verifying first means an unusable frame is discovered while the old
+// record is still intact.
+func replaceEnrollment(ctx context.Context, apiURL, token, name string, frames [][]byte) error {
+	if len(frames) == 0 {
+		return fmt.Errorf("no frames to enroll")
+	}
+	if err := verifyPhotos(apiURL, token, name, frames); err != nil {
+		return err
+	}
+	if err := deleteUser(apiURL, token, name); err != nil {
+		return fmt.Errorf("delete old record: %w", err)
+	}
+	for i, f := range frames {
+		if err := enrollOne(apiURL, token, name, f); err != nil {
+			return fmt.Errorf("enroll photo %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+// verifyPhotos checks that the API accepts every frame, by enrolling them
+// into a scratch user that is removed afterwards.
+//
+// A frame with no face in it is rejected by the API. Discovering that
+// before the old record is deleted is what keeps a failed re-enrollment
+// from costing the user their existing photos.
+func verifyPhotos(apiURL, token, name string, frames [][]byte) error {
+	scratch := scratchName(name)
+	for i, f := range frames {
+		if err := enrollOne(apiURL, token, scratch, f); err != nil {
+			// Clean up the scratch user before reporting the failure.
+			_ = deleteUser(apiURL, token, scratch)
+			return fmt.Errorf("photo %d was rejected by the API (%w); the existing enrollment is unchanged", i+1, err)
+		}
+	}
+	if err := deleteUser(apiURL, token, scratch); err != nil {
+		return fmt.Errorf("remove verification user: %w", err)
+	}
+	return nil
+}
+
+// scratchName is the temporary user name used to verify photos.
+func scratchName(name string) string {
+	return name + "-reenroll-verify"
 }
 
 // pickDistinctCaptures keeps the first frame of each run of equal frames, up
