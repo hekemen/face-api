@@ -46,6 +46,8 @@ func (m *burstProcessor) ExtractEmbedding(crop *domain.FaceCrop) (domain.FaceEmb
 	return crop.Embedding, nil
 }
 
+func (m *burstProcessor) AlignmentMode() string { return "arcface5" }
+
 type burstUserRepo struct {
 	users        []*domain.User
 	listAllCalls int
@@ -442,6 +444,55 @@ func (r *recordingProcessor) DetectAndCropFrame(w, h int, pix []byte) (*domain.F
 		r.onFrame(w, h, pix)
 	}
 	return r.burstProcessor.DetectAndCropFrame(w, h, pix)
+}
+
+func TestScanBurstSkipsUsersFromAnotherAlignmentSpace(t *testing.T) {
+	emb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{
+		Name:       "alice",
+		Embeddings: []domain.FaceEmbedding{emb},
+		Alignment:  "bbox", // enrolled in the other space
+	}
+	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb}
+	proc := &burstProcessor{crop: crop}
+	grabber := &burstGrabber{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 20*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Matched {
+		t.Fatalf("Matched = true for a user enrolled in another alignment space (similarity %v)", res.Similarity)
+	}
+}
+
+func TestScanBurstMatchesUsersInTheActiveSpace(t *testing.T) {
+	emb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{
+		Name:       "alice",
+		Embeddings: []domain.FaceEmbedding{emb},
+		Alignment:  "arcface5", // same space as the processor
+	}
+	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb}
+	proc := &burstProcessor{crop: crop}
+	grabber := &burstGrabber{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 20*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if !res.Matched {
+		t.Fatalf("Matched = false for a user enrolled in the active alignment space (similarity %v)", res.Similarity)
+	}
+	if res.Name != "alice" {
+		t.Errorf("Name = %q, want alice", res.Name)
+	}
 }
 
 func TestScanBurstCancel(t *testing.T) {

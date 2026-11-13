@@ -108,6 +108,11 @@ type FaceProcessor interface {
 	// ExtractEmbedding takes a 112×112 face crop and returns a 512-dim
 	// embedding vector.
 	ExtractEmbedding(crop *FaceCrop) (FaceEmbedding, error)
+	// AlignmentMode returns the crop mode the processor embeds with
+	// ("bbox" or "arcface5"). Embeddings from different modes are not
+	// comparable, so the matching path uses this to tell which stored
+	// enrollments can be compared with a fresh capture.
+	AlignmentMode() string
 }
 
 // RTSPReader reads one frame from an RTSP stream as JPEG bytes.

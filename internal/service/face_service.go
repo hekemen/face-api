@@ -26,6 +26,9 @@ type FaceServiceImpl struct {
 	threshold  float32
 	logger     *zerolog.Logger
 	mu         sync.Mutex
+	// alignment is the crop mode the processor embeds with. Enrollments
+	// made in another mode are not comparable with fresh captures.
+	alignment string
 	// burst configuration
 	burstWindow         time.Duration
 	burstSampleInterval time.Duration
@@ -34,12 +37,39 @@ type FaceServiceImpl struct {
 // New creates a new FaceService.
 func New(users domain.UserRepository, audit domain.AuditRepository,
 	processor domain.FaceProcessor, threshold float32) *FaceServiceImpl {
-	return &FaceServiceImpl{
+	s := &FaceServiceImpl{
 		users:     users,
 		audit:     audit,
 		processor: processor,
 		threshold: threshold,
 	}
+	if processor != nil {
+		s.alignment = processor.AlignmentMode()
+	}
+	return s
+}
+
+// usersInActiveSpace returns the users whose embeddings are comparable with
+// the active alignment mode.
+//
+// Embeddings from different crop modes are different spaces, so comparing
+// them yields a number that means nothing: measured, a bbox enrollment
+// scores 0.80 against the same photo in arcface5 space, which looks like a
+// strong match but is an artifact of the crop, not of the face. Such users
+// are skipped instead.
+//
+// An empty stored mode means "unknown" (the record predates the field), and
+// is treated as comparable so existing enrollments keep working until they
+// are re-enrolled.
+func (s *FaceServiceImpl) usersInActiveSpace(users []*domain.User) []*domain.User {
+	out := make([]*domain.User, 0, len(users))
+	for _, u := range users {
+		if u.Alignment != "" && u.Alignment != s.alignment {
+			continue
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 // WithLogger sets the logger for the service.
@@ -178,6 +208,7 @@ func (s *FaceServiceImpl) EnrollImage(name string, imageData []byte) error {
 		Embeddings: append(embeddings, embedding),
 		Pictures:   append(pictures, base64.StdEncoding.EncodeToString(crop.Data)),
 		UpdatedAt:  time.Now(),
+		Alignment:  s.alignment,
 	}
 
 	if err := s.users.Save(updated); err != nil {
@@ -223,6 +254,10 @@ func (s *FaceServiceImpl) RecognizeImage(imageData []byte) (*domain.RecognitionR
 	}
 
 	s.logf("checking users", "user_count", len(users), "timestamp", time.Now().Format(time.RFC3339))
+
+	// Only users whose embeddings are comparable with the active alignment
+	// mode can be matched against this capture.
+	users = s.usersInActiveSpace(users)
 
 	var bestName string
 	var bestScore float32 = -1.0
@@ -426,6 +461,9 @@ func (s *FaceServiceImpl) ScanBurst(ctx context.Context) (*domain.StreamCheckRes
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
+	// Only users whose embeddings are comparable with the active alignment
+	// mode can be matched against a fresh capture.
+	users = s.usersInActiveSpace(users)
 
 	start := time.Now()
 	var (

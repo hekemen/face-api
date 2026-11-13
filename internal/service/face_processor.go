@@ -309,6 +309,9 @@ func (p *FaceProcessorImpl) runRecognize() (domain.FaceEmbedding, error) {
 	return domain.FaceEmbedding(data), nil
 }
 
+// AlignmentMode returns the crop mode this processor embeds with.
+func (p *FaceProcessorImpl) AlignmentMode() string { return string(p.align) }
+
 // ExtractEmbedding extracts a face embedding from a FaceCrop.
 // If the crop already contains an embedding, it is returned directly.
 // Otherwise the JPEG data is decoded and recognition is run.

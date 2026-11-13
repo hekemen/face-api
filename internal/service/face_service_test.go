@@ -38,6 +38,8 @@ func (m *mockProcessor) ExtractEmbedding(crop *domain.FaceCrop) (domain.FaceEmbe
 	return crop.Embedding, nil
 }
 
+func (m *mockProcessor) AlignmentMode() string { return "bbox" }
+
 type mockUserRepo struct {
 	users []*domain.User
 }
