@@ -108,7 +108,7 @@ func (g *burstGrabber) Grab(ctx context.Context) (int, int, []byte, error) {
 
 func TestScanBurstReturnsFirstMatch(t *testing.T) {
 	emb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb, BBox: [4]float32{0, 0, 1, 1}}
 	proc := &burstProcessor{crop: crop}
 	grabber := &burstGrabber{w: 640, h: 480}
@@ -155,7 +155,7 @@ func TestScanBurstReturnsFirstMatch(t *testing.T) {
 func TestScanBurstWritesOneAuditRow(t *testing.T) {
 	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
 	cropEmb := domain.FaceEmbedding{0, 1, 0, 0} // orthogonal to alice
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: cropEmb}
 	proc := &burstProcessor{crop: crop}
 	grabber := &burstGrabber{w: 640, h: 480}
@@ -192,7 +192,7 @@ func TestScanBurstWritesOneAuditRow(t *testing.T) {
 
 func TestScanBurstStopsAtFirstMatch(t *testing.T) {
 	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}, Alignment: "arcface5"}
 	// The first sample matches; the burst must stop there and not keep
 	// grabbing frames.
 	crop := &domain.FaceCrop{Embedding: aliceEmb}
@@ -216,7 +216,7 @@ func TestScanBurstStopsAtFirstMatch(t *testing.T) {
 
 func TestScanBurstReadsUsersOnce(t *testing.T) {
 	emb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb}
 	proc := &burstProcessor{crop: crop}
 	grabber := &burstGrabber{w: 640, h: 480}
@@ -243,7 +243,7 @@ func TestScanBurstNoFrameGrabber(t *testing.T) {
 
 func TestScanBurstDeadlineReturnsBest(t *testing.T) {
 	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}, Alignment: "arcface5"}
 	crop1 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 1, 0, 0}}     // score 0.0
 	crop2 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0.6, 0.8, 0, 0}} // score 0.6
 	crop3 := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 0, 1, 0}}     // score 0.0
@@ -282,7 +282,7 @@ func TestScanBurstDeadlineReturnsBest(t *testing.T) {
 }
 
 func TestScanBurstAllNoFaceWritesNoFaceRow(t *testing.T) {
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}, Alignment: "arcface5"}
 	proc := &burstProcessor{errs: []error{domain.ErrNoFace, domain.ErrNoFace, domain.ErrNoFace}}
 	grabber := &burstGrabber{w: 640, h: 480}
 	users := &burstUserRepo{users: []*domain.User{alice}}
@@ -315,7 +315,7 @@ func TestScanBurstAllNoFaceWritesNoFaceRow(t *testing.T) {
 }
 
 func TestScanBurstProcessorErrors(t *testing.T) {
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}, Alignment: "arcface5"}
 	errs := []error{errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
 		errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
 		errors.New("processing error"), errors.New("processing error"), errors.New("processing error"),
@@ -348,7 +348,7 @@ func TestScanBurstProcessorErrors(t *testing.T) {
 // produces a not-ok result rather than an error, and writes no audit row:
 // a connection failure is not a scan outcome.
 func TestScanBurstGrabFailure(t *testing.T) {
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{{1, 0, 0, 0}}, Alignment: "arcface5"}
 	proc := &burstProcessor{crop: &domain.FaceCrop{Embedding: alice.Embeddings[0]}}
 	grabber := &burstGrabber{err: errors.New("RTSP connect: connection refused")}
 	users := &burstUserRepo{users: []*domain.User{alice}}
@@ -374,7 +374,7 @@ func TestScanBurstGrabFailure(t *testing.T) {
 // does not end the burst: the next grab is attempted inside the window.
 func TestScanBurstRetriesAfterGrabFailure(t *testing.T) {
 	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Embedding: aliceEmb}
 	proc := &burstProcessor{crop: crop}
 	// The first grab fails; the second succeeds.
@@ -404,7 +404,7 @@ func TestScanBurstRetriesAfterGrabFailure(t *testing.T) {
 
 func TestScanBurstGrabsFullResolutionFrame(t *testing.T) {
 	aliceEmb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{aliceEmb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Embedding: aliceEmb}
 	proc := &burstProcessor{crop: crop}
 	// A 5 MP frame, like the camera's main stream.
@@ -469,6 +469,65 @@ func TestScanBurstSkipsUsersFromAnotherAlignmentSpace(t *testing.T) {
 	}
 }
 
+// TestScanBurstSkipsLegacyEnrollmentsInAnotherSpace checks that a record
+// written before the alignment field existed is treated as a bbox
+// enrollment.
+//
+// The arcface5 mode was introduced together with the field, so an empty
+// stored mode can only mean the historical bbox space. Treating it as
+// "unknown and comparable" would compare a bbox enrollment against an
+// arcface5 capture, which is meaningless.
+func TestScanBurstSkipsLegacyEnrollmentsInAnotherSpace(t *testing.T) {
+	emb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{
+		Name:       "alice",
+		Embeddings: []domain.FaceEmbedding{emb},
+		// No alignment recorded: this record predates the field, so its
+		// embeddings were made by the bbox crop.
+	}
+	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb}
+	proc := &burstProcessor{crop: crop}
+	grabber := &burstGrabber{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 20*time.Millisecond)
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if res.Matched {
+		t.Fatalf("Matched = true for a legacy (bbox) enrollment against an arcface5 capture (similarity %v)", res.Similarity)
+	}
+}
+
+// TestScanBurstMatchesLegacyEnrollmentsInTheSameSpace checks that a record
+// without an alignment still matches when the active mode is the one that
+// produced it, so an upgrade that does not change the mode breaks nothing.
+func TestScanBurstMatchesLegacyEnrollmentsInTheSameSpace(t *testing.T) {
+	emb := domain.FaceEmbedding{1, 0, 0, 0}
+	alice := &domain.User{
+		Name:       "alice",
+		Embeddings: []domain.FaceEmbedding{emb},
+	}
+	crop := &domain.FaceCrop{Data: []byte("crop"), Embedding: emb}
+	proc := &burstProcessor{crop: crop}
+	grabber := &burstGrabber{w: 640, h: 480}
+	users := &burstUserRepo{users: []*domain.User{alice}}
+	audit := &mockAuditRepo{}
+	s := New(users, audit, proc, 0.5).WithFrameGrabber(grabber).WithBurst(200*time.Millisecond, 20*time.Millisecond)
+	// The active mode is bbox, which is what a legacy record was made with.
+	s.alignment = "bbox"
+
+	res, err := s.ScanBurst(context.Background())
+	if err != nil {
+		t.Fatalf("ScanBurst: %v", err)
+	}
+	if !res.Matched {
+		t.Fatalf("Matched = false for a legacy enrollment in the same space (similarity %v)", res.Similarity)
+	}
+}
+
 func TestScanBurstMatchesUsersInTheActiveSpace(t *testing.T) {
 	emb := domain.FaceEmbedding{1, 0, 0, 0}
 	alice := &domain.User{
@@ -497,7 +556,7 @@ func TestScanBurstMatchesUsersInTheActiveSpace(t *testing.T) {
 
 func TestScanBurstCancel(t *testing.T) {
 	emb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Embedding: domain.FaceEmbedding{0, 1, 0, 0}} // score 0.0
 	proc := &burstProcessor{crop: crop}
 	grabber := &burstGrabber{w: 640, h: 480}
@@ -536,7 +595,7 @@ func TestScanBurstCancel(t *testing.T) {
 
 func TestScanBurstDoesNotHoldServiceMutex(t *testing.T) {
 	emb := domain.FaceEmbedding{1, 0, 0, 0}
-	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}}
+	alice := &domain.User{Name: "alice", Embeddings: []domain.FaceEmbedding{emb}, Alignment: "arcface5"}
 	crop := &domain.FaceCrop{Embedding: emb}
 	blockCh := make(chan struct{})
 	proc := &burstProcessor{crop: crop, blockCh: blockCh}

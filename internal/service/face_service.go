@@ -58,13 +58,17 @@ func New(users domain.UserRepository, audit domain.AuditRepository,
 // strong match but is an artifact of the crop, not of the face. Such users
 // are skipped instead.
 //
-// An empty stored mode means "unknown" (the record predates the field), and
-// is treated as comparable so existing enrollments keep working until they
-// are re-enrolled.
+// A record with no stored mode predates the field, so its embeddings were
+// made by the bbox crop — that is the only mode that existed then. It is
+// therefore comparable with a bbox capture and not with an arcface5 one.
 func (s *FaceServiceImpl) usersInActiveSpace(users []*domain.User) []*domain.User {
 	out := make([]*domain.User, 0, len(users))
 	for _, u := range users {
-		if u.Alignment != "" && u.Alignment != s.alignment {
+		mode := u.Alignment
+		if mode == "" {
+			mode = string(AlignmentBBox)
+		}
+		if mode != s.alignment {
 			continue
 		}
 		out = append(out, u)
